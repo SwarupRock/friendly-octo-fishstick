@@ -1,6 +1,6 @@
-# Wispr Flow — Frontend recreation
+# Swarah AI — voice your business
 
-A frontend-only, multi-page recreation inspired by the public Wispr Flow website. This is an independent demo project and is not affiliated with or endorsed by Wispr AI. It does not include backend services, real speech recognition, authentication, or payment processing.
+A frontend-only, multi-page recreation inspired by the public Swarah AI website. This is an independent demo project and is not affiliated with or endorsed by Swarah AI. It does not include backend services, real speech recognition, authentication, or payment processing.
 
 ## Run locally
 
