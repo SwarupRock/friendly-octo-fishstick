@@ -282,8 +282,41 @@ export async function createAudioCampaign({ blob, mimeType, languageHint, shopId
   });
 }
 
+/**
+ * One spoken reply while reviewing the facts: the backend transcribes it and
+ * reports `confirm`, `correct` (facts already updated), `restart` or `unclear`.
+ */
+export async function voiceTurn(campaignId, { blob, mimeType, languageHint } = {}) {
+  const audioB64 = await blobToBase64(blob);
+  return request(`/campaigns/${campaignId}/voice-turn`, {
+    method: 'POST',
+    timeoutMs: 120_000, // transcription + interpretation + re-validation
+    body: {
+      audio_b64: audioB64,
+      audio_mime: mimeType || blob?.type || 'audio/webm',
+      ...(languageHint ? { language_hint: languageHint } : {}),
+    },
+  });
+}
+
 export function extractFacts(campaignId) {
   return request(`/campaigns/${campaignId}/extract`, { method: 'POST', timeoutMs: 60_000 });
+}
+
+/**
+ * Recovery path after STT failure: attach a typed brief to an audio campaign
+ * that has no transcript yet. The backend keeps the recorded audio, stores the
+ * typed text as the immutable transcript, and runs fact extraction on it.
+ */
+export function setCampaignTranscript(campaignId, { text, languageHint } = {}) {
+  return request(`/campaigns/${campaignId}/transcript`, {
+    method: 'POST',
+    timeoutMs: 60_000, // extraction runs inline
+    body: {
+      text,
+      ...(languageHint ? { language_hint: languageHint } : {}),
+    },
+  });
 }
 
 // ── fact sheets ─────────────────────────────────────────────────────────
@@ -300,9 +333,32 @@ export function lockFactSheet(sheetId) {
   return request(`/factsheets/${sheetId}/lock`, { method: 'POST' });
 }
 
+/**
+ * Deterministic schema checks + Agnes semantic validation of the saved facts.
+ * A failed model call comes back as `validation.semantic.status ===
+ * 'unavailable'` (HTTP 200), so the caller must read the body, not the status.
+ */
+export function validateFactSheet(sheetId) {
+  return request(`/factsheets/${sheetId}/validate`, { method: 'POST', timeoutMs: 90_000 });
+}
+
 // ── plan ────────────────────────────────────────────────────────────────
-export function createPlan(campaignId) {
-  return request(`/campaigns/${campaignId}/plan`, { method: 'POST', timeoutMs: 90_000 });
+/**
+ * Ask the Campaign Director for a plan. `brief` is optional
+ * ({objective, tone, instructions}); `regenerate` stores a new version even
+ * when a plan already exists for the locked facts.
+ */
+export function createPlan(campaignId, { objective, tone, instructions, regenerate } = {}) {
+  return request(`/campaigns/${campaignId}/plan`, {
+    method: 'POST',
+    timeoutMs: GENERATION_TIMEOUT_MS, // bounded repair attempts run inline
+    body: {
+      ...(objective ? { objective } : {}),
+      ...(tone ? { tone } : {}),
+      ...(instructions ? { instructions } : {}),
+      regenerate: Boolean(regenerate),
+    },
+  });
 }
 
 export function getPlan(campaignId, signal) {
@@ -314,11 +370,15 @@ export function listAssets(campaignId, signal) {
   return request(`/campaigns/${campaignId}/assets`, { signal });
 }
 
-export function generatePosters(campaignId, variants = 1) {
+/**
+ * `allowFallbackArt` (live mode): if the image model fails, compose the poster
+ * on labelled fallback art instead of returning the provider error.
+ */
+export function generatePosters(campaignId, variants = 1, { allowFallbackArt = false } = {}) {
   return request(`/campaigns/${campaignId}/assets/posters`, {
     method: 'POST',
-    body: { variants },
-    timeoutMs: GENERATION_TIMEOUT_MS,
+    body: { variants, allow_fallback_art: Boolean(allowFallbackArt) },
+    timeoutMs: 240_000, // image generation is documented at 60–360 s
   });
 }
 
@@ -385,7 +445,53 @@ export function generateVoice(campaignId, { profileId, language }) {
   });
 }
 
+/** Languages, speakers and copy channels Sarvam text-to-speech accepts. */
+export function getVoiceOptions(signal) {
+  return request('/voice/options', { signal });
+}
+
+/** Speak one piece of plan copy with Sarvam TTS; returns the stored voice asset. */
+export function generateSpeech(campaignId, { language, speaker, channel } = {}) {
+  return request(`/campaigns/${campaignId}/tts`, {
+    method: 'POST',
+    body: {
+      language,
+      ...(speaker ? { speaker } : {}),
+      ...(channel ? { channel } : {}),
+    },
+    timeoutMs: GENERATION_TIMEOUT_MS,
+  });
+}
+
 // ── video jobs ──────────────────────────────────────────────────────────
+/**
+ * Submit an Agnes AI video task. Resolves as soon as the task is accepted
+ * (or with a `failed` job if the provider rejected it) — poll `listVideoJobs`
+ * for progress.
+ */
+export function generateAiVideo(campaignId, { seconds = 5, aspectRatio = '9:16' } = {}) {
+  return request(`/campaigns/${campaignId}/videos/generate`, {
+    method: 'POST',
+    body: { seconds, aspect_ratio: aspectRatio },
+    timeoutMs: 60_000,
+  });
+}
+
+/**
+ * Render the Brag Director's storyboard to a vertical campaign video
+ * (frames drawn from the locked facts, with the voice-over when one exists).
+ */
+export function generateBragVideo(campaignId) {
+  return request(`/campaigns/${campaignId}/videos/brag`, {
+    method: 'POST',
+    timeoutMs: GENERATION_TIMEOUT_MS,
+  });
+}
+
+export function cancelVideoJob(jobId) {
+  return request(`/campaigns/videos/jobs/${jobId}/cancel`, { method: 'POST' });
+}
+
 export function queueVideoJob(campaignId, { profileId } = {}) {
   return request(`/campaigns/${campaignId}/videos/jobs`, {
     method: 'POST',
@@ -393,8 +499,9 @@ export function queueVideoJob(campaignId, { profileId } = {}) {
   });
 }
 
+/** Job states, newest first. Polling this advances active AI video jobs. */
 export function listVideoJobs(campaignId, signal) {
-  return request(`/campaigns/${campaignId}/videos/jobs`, { signal });
+  return request(`/campaigns/${campaignId}/videos/jobs`, { signal, timeoutMs: 150_000 });
 }
 
 export function runVideoJob(jobId) {
@@ -464,11 +571,12 @@ export function exportCampaign(campaignId, signal) {
 
 // ── live transcription preview ──────────────────────────────────────────
 /** Absolute ws:// or wss:// URL for an API path. */
-function wsUrl(path, language) {
+function wsUrl(path, language, mime) {
   const origin = API_BASE || `${window.location.protocol}//${window.location.host}`;
   const url = new URL(`${origin}/api${path}`);
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
   if (language) url.searchParams.set('language', language);
+  if (mime) url.searchParams.set('mime', mime);
   return url.toString();
 }
 
@@ -480,10 +588,10 @@ function wsUrl(path, language) {
  * `partial`, `final`, `unavailable`, `error`. A failure here is never fatal —
  * the finished clip is still transcribed by the normal pipeline.
  */
-export function openSttStream({ token, language, onEvent, onError } = {}) {
+export function openSttStream({ token, language, mime, onEvent, onError } = {}) {
   let socket;
   try {
-    socket = new WebSocket(wsUrl('/stt/stream', language));
+    socket = new WebSocket(wsUrl('/stt/stream', language, mime));
   } catch (error) {
     onError?.(error);
     return { send() {}, stop() {}, close() {} };

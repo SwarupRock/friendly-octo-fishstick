@@ -28,6 +28,9 @@ def _create_engine(url: str) -> Engine:
     connect_args: dict[str, Any] = {}
     if url.startswith("sqlite"):
         connect_args["check_same_thread"] = False
+        # Generation steps run side by side; a writer waits for the lock
+        # instead of failing with "database is locked".
+        connect_args["timeout"] = 30
     return create_engine(url, connect_args=connect_args, future=True)
 
 

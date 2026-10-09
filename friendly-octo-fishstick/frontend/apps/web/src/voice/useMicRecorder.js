@@ -18,7 +18,7 @@ export function recordingSupported() {
   );
 }
 
-function preferredMimeType() {
+export function preferredMimeType() {
   const candidates = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/mp4'];
   return candidates.find((type) => window.MediaRecorder?.isTypeSupported?.(type)) ?? '';
 }

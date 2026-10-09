@@ -6,13 +6,14 @@ Extraction *proposes*; it never locks. The provider hierarchy is:
         -> (when unavailable / not configured) manual FactSheet entry,
            surfaced to the client as an in-band "unavailable" status.
 
-A live Agnes call is gated on three things at once: `TITAN_MODE=live`, a
-configured key, and the deliberate `TITAN_AGNES_INTERFACE_VERIFIED=1` toggle.
-When any of those is missing the call raises `ProviderUnavailableError` and the
-API degrades to manual entry rather than fabricating facts. Whatever the model
-returns is passed through `normalize_fact_data`, so a chatty or malformed
-response can never become a locked fact. Mock extraction is deterministic,
-rule-based and explicitly labelled (`is_mock=True`).
+A live Agnes call needs `TITAN_MODE=live` and a configured key; when either is
+missing the call raises `ProviderUnavailableError` and the API degrades to
+manual entry rather than fabricating facts. Whatever the model returns is
+passed through `normalize_fact_data` (the deterministic schema), so a chatty or
+malformed response can never become a locked fact. Extraction is followed by
+`fact_validation` (deterministic rules + Agnes semantic checks). Mock
+extraction is deterministic, rule-based and explicitly labelled
+(`is_mock=True`).
 """
 
 from __future__ import annotations
@@ -514,8 +515,8 @@ class AgnesExtractionProvider(ExtractionProvider):
                 ),
             )
 
-        # Raises ProviderUnavailableError when unconfigured or not yet
-        # interface-verified; the caller then offers manual entry.
+        # Raises ProviderUnavailableError when unconfigured; the caller then
+        # offers manual entry.
         client = get_llm_client(settings)
         system, user = build_extraction_prompt(transcript, business_name=business_name)
         result: LLMResult = await client.complete_json(system, user, max_tokens=1200)
@@ -536,8 +537,8 @@ class AgnesExtractionProvider(ExtractionProvider):
             is_mock=result.is_mock,
             status="ok",
             message=(
-                "Extracted by Agnes 3.0 Flash. Review and correct every field "
-                "before locking."
+                f"Extracted by Agnes ({result.model}). Review and correct every "
+                "field before locking."
             ),
         )
 
@@ -590,24 +591,19 @@ def extraction_status(settings: Settings | None = None) -> ProviderStatus:
             capabilities=["mock_extraction"],
         )
 
-    import os
-
-    configured = bool(settings.agnes_api_base and settings.agnes_api_key)
-    verified = bool(configured and os.environ.get("TITAN_AGNES_INTERFACE_VERIFIED") == "1")
+    configured = settings.agnes_configured
     return ProviderStatus(
         name="extraction",
         kind="extraction",
         mode=mode,
         configured=configured,
-        available=configured and verified,
-        verified=verified,
+        available=configured,
+        verified=configured,
         detail=(
-            "Agnes 3.0 Flash extraction active."
-            if (configured and verified)
-            else (
-                "Agnes 3.0 Flash slot registered but unverified; live extraction is "
-                "disabled pending the real interface and credentials."
-            )
+            f"Agnes {settings.agnes_text_model} extraction + semantic validation active."
+            if configured
+            else "Agnes is not configured: set TITAN_AGNES_API_BASE and TITAN_AGNES_API_KEY. "
+            "Facts must be entered manually until then."
         ),
         capabilities=["agnes_extraction", "manual_entry"],
     )

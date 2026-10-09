@@ -469,3 +469,109 @@ body.light-mode .vw-loading {
   .vw-hello h1 { font-size: 23px; }
   .vw-signout-label { display: none; }
 }
+
+
+/* Validation notes inside the facts bubble + the speak/type switch. */
+.vw-findings { margin: 10px 0 0; padding-left: 18px; font-size: 12.5px; color: var(--vw-muted); display: grid; gap: 4px; }
+.vw-findings li.is-bad { color: var(--vw-warn-ink); }
+.vw-mode-toggle { margin-top: 8px; font-size: 12px; }
+a.vw-ghost, a.vw-btn { text-decoration: none; }
+
+
+/* ── voice-only flow: spoken hint, and the generated package ────────── */
+.vw-hint {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0 0 4px;
+  font-size: 13px;
+  color: var(--vw-chip-ink);
+  background: var(--vw-chip);
+  border-radius: 999px;
+  padding: 8px 14px;
+  text-align: center;
+}
+
+.vw-bubble.vw-package { max-width: min(860px, 100%); }
+
+.vw-media { display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-start; margin: 6px 0 12px; }
+.vw-media figure { margin: 0; }
+.vw-media figcaption {
+  margin-top: 6px;
+  font: 500 10px 'DM Mono', monospace;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: var(--vw-muted);
+}
+.vw-media .vw-poster { width: 240px; height: 300px; object-fit: cover; margin: 0; }
+.vw-media .vw-poster.is-loading { height: 300px; }
+
+.vw-video {
+  display: block;
+  width: 169px;
+  height: 300px;
+  object-fit: cover;
+  border-radius: 14px;
+  border: 1px solid var(--vw-line);
+  background: #000;
+}
+.vw-video.is-loading { background: var(--vw-surface-2); }
+.vw-video.is-rendering { display: grid; place-items: center; }
+
+.vw-audio { margin: 0 0 12px; }
+.vw-audio audio { display: block; width: min(420px, 100%); height: 36px; }
+
+
+/* ── the waiting view: what is being made, live ─────────────────────── */
+.vw-kbd {
+  display: inline-block;
+  padding: 1px 8px;
+  border: 1px solid var(--vw-line-strong);
+  border-bottom-width: 2px;
+  border-radius: 6px;
+  font: 600 11px 'DM Mono', monospace;
+  color: var(--vw-ink);
+  background: var(--vw-surface);
+}
+.vw-elapsed { margin-left: auto; color: var(--vw-chip-ink); }
+.vw-package .vw-tag { width: 100%; }
+.vw-making { margin: 2px 0 14px; }
+.vw-bar { height: 4px; border-radius: 4px; background: var(--vw-surface-2); overflow: hidden; margin-bottom: 12px; }
+.vw-bar i { display: block; height: 100%; border-radius: 4px; background: var(--vw-lime); transition: width 0.6s ease; }
+.vw-stages { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.vw-stages li { display: grid; grid-template-columns: 18px minmax(120px, auto) 1fr; gap: 8px; align-items: center; font-size: 12.5px; color: var(--vw-muted); }
+.vw-stages li.is-doing, .vw-stages li.is-done { color: var(--vw-ink); }
+.vw-stages li.is-failed { color: var(--vw-warn-ink); }
+.vw-stage-mark { display: grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; border: 1px solid var(--vw-line-strong); }
+.is-done .vw-stage-mark { background: var(--vw-chip); color: var(--vw-chip-ink); border-color: transparent; }
+.is-failed .vw-stage-mark { background: var(--vw-warn-bg); border-color: transparent; }
+.is-doing .vw-stage-mark { border-color: transparent; }
+.vw-stage-label { font-weight: 600; }
+.vw-stage-note { font-size: 11.5px; color: var(--vw-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.is-failed .vw-stage-note { color: var(--vw-warn-ink); white-space: normal; }
+.vw-spin { width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--vw-line-strong); border-top-color: var(--vw-lime); animation: vw-spin 0.8s linear infinite; }
+@keyframes vw-spin { to { transform: rotate(360deg); } }
+.vw-wait-note { margin: 12px 0 0; padding: 10px 12px; border-radius: 12px; background: var(--vw-chip); color: var(--vw-chip-ink); font-size: 12.5px; line-height: 1.5; animation: vw-note-in 0.5s ease; }
+@keyframes vw-note-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+.vw-poster.is-loading, .vw-video.is-loading, .vw-caption-card.is-loading {
+  position: relative;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  background: var(--vw-surface-2);
+}
+.vw-poster.is-loading::after, .vw-video.is-loading::after, .vw-caption-card.is-loading::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(100deg, transparent 30%, color-mix(in srgb, var(--vw-ink) 9%, transparent) 50%, transparent 70%);
+  animation: vw-shimmer 1.5s linear infinite;
+}
+@keyframes vw-shimmer { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
+.vw-poster.is-loading span, .vw-video.is-loading span { position: relative; z-index: 1; padding: 0 12px; text-align: center; font-size: 11.5px; color: var(--vw-muted); }
+
+.vw-captions { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; margin: 0 0 4px; }
+.vw-caption-card { border: 1px solid var(--vw-line); border-radius: 12px; padding: 10px 12px; }
+.vw-caption-card.is-loading { height: 96px; }
+.vw-caption-card .vw-caption { margin: 0; font-size: 13px; }

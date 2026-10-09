@@ -136,17 +136,19 @@ def test_agnes_provider_live_unconfigured_raises(client, env_override):
     assert excinfo.value.code == "provider_not_configured"
 
 
-def test_agnes_provider_live_configured_but_unverified_raises(client, env_override):
-    """Keys alone are not consent: the interface must be deliberately verified."""
+def test_live_mode_with_a_key_reaches_the_real_agnes_client(client, env_override):
+    """Explicit live mode + a configured key is the whole gate (no extra toggle)."""
+    from app.services.agnes import AgnesLLMClient, MockLLMClient, get_llm_client
+
     env_override(
         TITAN_MODE="live",
         TITAN_AGNES_API_BASE="https://example.invalid",
         TITAN_AGNES_API_KEY="k",
     )
-    provider = AgnesExtractionProvider(get_settings())
-    with pytest.raises(ProviderUnavailableError) as excinfo:
-        asyncio.run(provider.extract(DEMO_TRANSCRIPT))
-    assert excinfo.value.code == "interface_unverified"
+    assert isinstance(get_llm_client(get_settings()), AgnesLLMClient)
+
+    env_override(TITAN_MODE="mock")
+    assert isinstance(get_llm_client(get_settings()), MockLLMClient)
 
 
 def test_agnes_provider_in_mock_mode_degrades_to_labelled_mock(client, env_override):

@@ -1,7 +1,17 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, Edit3, Lock, LockKeyhole, ShieldCheck } from 'lucide-react';
-import { lockFactSheet, patchFactSheet } from '../lib/api';
-import { useAsyncAction } from './hooks';
+import {
+  AlertTriangle,
+  Braces,
+  Check,
+  Copy,
+  Edit3,
+  Lock,
+  LockKeyhole,
+  ScanSearch,
+  ShieldCheck,
+} from 'lucide-react';
+import { lockFactSheet, patchFactSheet, validateFactSheet } from '../lib/api';
+import { copyText, useAsyncAction } from './hooks';
 import { Banner, ErrorBanner, Spinner } from './ui';
 
 /**
@@ -14,7 +24,11 @@ import { Banner, ErrorBanner, Spinner } from './ui';
  *  - a locked version is read-only; editing it creates a new draft version;
  *  - fields the extractor could not fill stay visibly empty — never guessed;
  *  - the integrity metadata (hash, seal, version) is shown as-is, including a
- *    failed seal check.
+ *    failed seal check;
+ *  - validation findings (deterministic rules + Agnes) point at the field they
+ *    concern, and a stale or unavailable check is labelled as such;
+ *  - the JSON inspector shows exactly what is stored — or, while the form has
+ *    unsaved edits, exactly what would be saved.
  */
 
 const LANGUAGES = ['English', 'Hindi', 'Kannada', 'Tamil', 'Telugu'];
@@ -106,7 +120,28 @@ function buildPatch(draft) {
   };
 }
 
-export default function FactReviewStep({ campaign, factsheet, onUpdated, onLocked }) {
+/** The authoritative part of a sheet, in the backend's canonical shape. */
+function canonicalFacts(facts) {
+  return buildPatch(draftFrom(facts));
+}
+
+/** Worst finding per field path, for inline highlighting. */
+function indexFindings(validation) {
+  const rank = { error: 3, warning: 2, info: 1 };
+  const byField = new Map();
+  const all = [
+    ...(validation?.deterministic?.findings ?? []),
+    // A stale semantic report describes facts that have since changed.
+    ...(validation?.semantic && !validation.semantic.stale ? validation.semantic.findings ?? [] : []),
+  ];
+  all.forEach((item) => {
+    const current = byField.get(item.field);
+    if (!current || rank[item.severity] > rank[current.severity]) byField.set(item.field, item);
+  });
+  return byField;
+}
+
+export default function FactReviewStep({ campaign, factsheet, onUpdated, onLocked, onValidated }) {
   const facts = factsheet?.facts;
   const isLocked = factsheet?.status === 'locked';
   const [draft, setDraft] = useState(() => draftFrom(facts));
@@ -120,6 +155,17 @@ export default function FactReviewStep({ campaign, factsheet, onUpdated, onLocke
 
   const save = useAsyncAction();
   const lock = useAsyncAction();
+  const validate = useAsyncAction();
+
+  const validation = factsheet?.validation ?? null;
+  const flagged = useMemo(() => indexFindings(validation), [validation]);
+  // What the form would save right now vs. what the server has stored.
+  const draftFacts = useMemo(() => buildPatch(draft), [draft]);
+  const savedFacts = useMemo(() => canonicalFacts(facts), [facts]);
+  const dirty = useMemo(
+    () => JSON.stringify(draftFacts) !== JSON.stringify(savedFacts),
+    [draftFacts, savedFacts],
+  );
 
   const missing = useMemo(() => new Set(facts?.missing ?? []), [facts]);
   const inferred = useMemo(() => new Set(facts?.inferred ?? []), [facts]);
@@ -149,22 +195,40 @@ export default function FactReviewStep({ campaign, factsheet, onUpdated, onLocke
     if (result.ok) onLocked(result.data);
   };
 
+  const handleValidate = async () => {
+    const result = await validate.run(() => validateFactSheet(factsheet.id));
+    if (result.ok) (onValidated ?? onUpdated)(result.data);
+  };
+
   if (!factsheet) {
+    const sttFailed = campaign?.transcript == null;
     return (
       <div className="ws-card">
         <Banner tone="warn" title="No fact sheet yet">
-          This campaign has no extracted facts. Re-run extraction from the capture step.
+          {sttFailed
+            ? 'Speech-to-text was unavailable, so there are no extracted facts yet. Open the Capture step to type the offer instead — that creates the fact sheet.'
+            : 'This campaign has no extracted facts yet. Re-run extraction from the capture step.'}
         </Banner>
       </div>
     );
   }
 
   const extraction = factsheet.extraction;
-  const fieldClass = (path) => `ws-field ${missing.has(path) ? 'is-missing' : ''}`;
+  const fieldClass = (path) => {
+    const severity = flagged.get(path)?.severity;
+    const flag = severity === 'error' ? 'is-flagged' : severity === 'warning' ? 'is-warned' : '';
+    return `ws-field ${missing.has(path) ? 'is-missing' : ''} ${flag}`;
+  };
   const hint = (path) => {
     if (missing.has(path)) return 'Svarah did not hear this — add it yourself.';
     if (inferred.has(path)) return 'Inferred from what you said. Confirm or correct it.';
     return null;
+  };
+  /** Inline validation message for a field, if any. */
+  const flag = (path) => {
+    const item = flagged.get(path);
+    if (!item || item.severity === 'info') return null;
+    return <small className="ws-flag">{item.message}</small>;
   };
 
   return (
@@ -246,6 +310,7 @@ export default function FactReviewStep({ campaign, factsheet, onUpdated, onLocke
                 <label htmlFor="f-business-name">Business name</label>
                 <input id="f-business-name" type="text" value={draft.businessName} onChange={set('businessName')} />
                 {hint('business.name') ? <small>{hint('business.name')}</small> : null}
+                {flag('business.name')}
               </div>
 
               <div className={fieldClass('offer.product')}>
@@ -258,6 +323,7 @@ export default function FactReviewStep({ campaign, factsheet, onUpdated, onLocke
                   onChange={set('product')}
                 />
                 <small>{hint('offer.product') ?? 'Comma-separated.'}</small>
+                {flag('offer.product')}
               </div>
 
               <div className="ws-grid cols-3" style={{ gap: 12 }}>
@@ -271,10 +337,12 @@ export default function FactReviewStep({ campaign, factsheet, onUpdated, onLocke
                     value={draft.discountPercent}
                     onChange={set('discountPercent')}
                   />
+                  {flag('offer.discount_percent')}
                 </div>
-                <div className="ws-field">
+                <div className={fieldClass('offer.discount_flat')}>
                   <label htmlFor="f-discount-flat">Flat off</label>
                   <input id="f-discount-flat" type="number" min="0" value={draft.discountFlat} onChange={set('discountFlat')} />
+                  {flag('offer.discount_flat')}
                 </div>
                 <div className="ws-field">
                   <label htmlFor="f-price">Price</label>
@@ -295,6 +363,7 @@ export default function FactReviewStep({ campaign, factsheet, onUpdated, onLocke
                   onChange={set('audience')}
                 />
                 {hint('offer.audience') ? <small>{hint('offer.audience')}</small> : null}
+                {flag('offer.audience')}
               </div>
             </div>
 
@@ -316,24 +385,29 @@ export default function FactReviewStep({ campaign, factsheet, onUpdated, onLocke
                   ))}
                 </div>
                 {hint('offer.days') ? <small>{hint('offer.days')}</small> : null}
+                {flag('offer.days')}
               </div>
 
               <div className="ws-grid cols-2" style={{ gap: 12 }}>
                 <div className={fieldClass('offer.start_time')}>
                   <label htmlFor="f-start-time">Opens</label>
                   <input id="f-start-time" type="time" value={draft.startTime} onChange={set('startTime')} />
+                  {flag('offer.start_time')}
                 </div>
                 <div className={fieldClass('offer.end_time')}>
                   <label htmlFor="f-end-time">Closes</label>
                   <input id="f-end-time" type="time" value={draft.endTime} onChange={set('endTime')} />
+                  {flag('offer.end_time')}
                 </div>
                 <div className={fieldClass('offer.date_start')}>
                   <label htmlFor="f-date-start">From date</label>
                   <input id="f-date-start" type="date" value={draft.dateStart} onChange={set('dateStart')} />
+                  {flag('offer.date_start')}
                 </div>
                 <div className={fieldClass('offer.date_end')}>
                   <label htmlFor="f-date-end">To date</label>
                   <input id="f-date-end" type="date" value={draft.dateEnd} onChange={set('dateEnd')} />
+                  {flag('offer.date_end')}
                 </div>
               </div>
 
@@ -341,6 +415,7 @@ export default function FactReviewStep({ campaign, factsheet, onUpdated, onLocke
                 <label htmlFor="f-offer-location">Location</label>
                 <input id="f-offer-location" type="text" value={draft.offerLocation} onChange={set('offerLocation')} />
                 {hint('offer.location') ? <small>{hint('offer.location')}</small> : null}
+                {flag('offer.location')}
               </div>
 
               <div className="ws-field">
@@ -372,6 +447,7 @@ export default function FactReviewStep({ campaign, factsheet, onUpdated, onLocke
                   ))}
                 </div>
                 {hint('languages') ? <small>{hint('languages')}</small> : null}
+                {flag('languages')}
               </div>
             </div>
           </div>
@@ -379,19 +455,52 @@ export default function FactReviewStep({ campaign, factsheet, onUpdated, onLocke
 
         {!readOnly ? (
           <div className="ws-asset-foot" style={{ marginTop: 10 }}>
-            <button type="button" className="ws-btn is-ghost" onClick={handleSave} disabled={save.pending}>
+            <button
+              type="button"
+              className="ws-btn is-ghost"
+              onClick={handleSave}
+              disabled={save.pending || !dirty}
+              title={dirty ? undefined : 'Nothing to save — the form matches the stored facts.'}
+            >
               {save.pending ? <Spinner label="Saving…" /> : 'Save corrections'}
             </button>
             {!isLocked ? (
-              <button type="button" className="ws-btn is-primary" onClick={handleLock} disabled={lock.pending}>
-                {lock.pending ? <Spinner label="Locking…" /> : <><Lock size={14} /> Lock these facts</>}
+              <button
+                type="button"
+                className="ws-btn is-primary"
+                onClick={handleLock}
+                disabled={lock.pending || dirty}
+                title={dirty ? 'Save your corrections first — only saved, validated facts are locked.' : undefined}
+              >
+                {lock.pending ? <Spinner label="Locking…" /> : <><Lock size={14} /> Confirm and lock these facts</>}
               </button>
             ) : null}
           </div>
         ) : null}
+        {!readOnly && dirty ? (
+          <small style={{ color: 'var(--muted)', display: 'block', marginTop: 8 }}>
+            You have unsaved corrections. Save them before locking.
+          </small>
+        ) : null}
 
         <ErrorBanner error={lock.error} title="These facts could not be locked" />
       </div>
+
+      <ValidationCard
+        validation={validation}
+        dirty={dirty}
+        superseded={factsheet.status === 'superseded'}
+        pending={validate.pending}
+        error={validate.error}
+        onValidate={handleValidate}
+      />
+
+      <FactsJsonCard
+        json={dirty ? draftFacts : savedFacts}
+        dirty={dirty}
+        status={factsheet.status}
+        validation={validation}
+      />
 
       {isLocked ? <IntegrityCard factsheet={factsheet} /> : null}
 
@@ -479,6 +588,171 @@ function IntegrityCard({ factsheet }) {
           </dl>
         </div>
       ) : null}
+    </div>
+  );
+}
+
+const SEVERITY_LABEL = { error: 'Must fix', warning: 'Check', info: 'Note' };
+const SOURCE_LABEL = { schema: 'Rule check', agnes: 'Agnes', mock: 'Offline check' };
+
+function FindingList({ findings }) {
+  if (!findings?.length) return null;
+  return (
+    <ul className="ws-findings">
+      {findings.map((item, index) => (
+        // eslint-disable-next-line react/no-array-index-key
+        <li key={`${item.field}-${item.code}-${index}`} className={`ws-finding is-${item.severity}`}>
+          <span className={`ws-tag ${item.severity === 'error' ? 'is-fail' : item.severity === 'warning' ? 'is-review' : ''}`}>
+            {SEVERITY_LABEL[item.severity] ?? item.severity}
+          </span>
+          <div>
+            <p>
+              <b>{item.field === 'general' ? 'General' : labelFor(item.field)}</b>: {item.message}
+            </p>
+            {item.suggestion ? <small>{item.suggestion}</small> : null}
+            <small>{SOURCE_LABEL[item.source] ?? item.source}</small>
+          </div>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/**
+ * Validation results: the deterministic rule check (always present, decides
+ * whether locking is allowed) and Agnes' semantic review (advisory). Neither a
+ * stale report nor a failed model call is ever shown as a pass.
+ */
+function ValidationCard({ validation, dirty, superseded, pending, error, onValidate }) {
+  const deterministic = validation?.deterministic;
+  const semantic = validation?.semantic;
+  const rulesOk = deterministic && deterministic.status !== 'failed';
+  const semanticStale = Boolean(semantic?.stale);
+
+  let semanticTag = <span className="ws-tag">Not run yet</span>;
+  if (semantic?.status === 'unavailable') {
+    semanticTag = <span className="ws-tag is-fail">Agnes check unavailable</span>;
+  } else if (semantic && semanticStale) {
+    semanticTag = <span className="ws-tag is-review">Out of date</span>;
+  } else if (semantic?.status === 'ok') {
+    const count = semantic.findings?.length ?? 0;
+    semanticTag = (
+      <span className={`ws-tag ${count ? 'is-review' : 'is-pass'}`}>
+        {count ? `${count} finding${count === 1 ? '' : 's'}` : 'No issues found'}
+      </span>
+    );
+  }
+
+  return (
+    <div className="ws-card">
+      <div className="ws-card-head">
+        <h3>
+          <ScanSearch size={15} style={{ verticalAlign: -2, marginRight: 6 }} />
+          Fact validation
+        </h3>
+        <div className="ws-chips">
+          {deterministic ? (
+            <span className={`ws-tag ${rulesOk ? 'is-pass' : 'is-fail'}`}>
+              {rulesOk ? 'Rule checks passed' : 'Rule checks failed'}
+            </span>
+          ) : (
+            <span className="ws-tag">Rule checks not run</span>
+          )}
+          {semantic?.is_mock ? <span className="ws-tag is-mock">Offline check</span> : null}
+        </div>
+      </div>
+
+      {dirty ? (
+        <Banner tone="info">
+          These results describe the saved facts, not your unsaved corrections. Save, then validate again.
+        </Banner>
+      ) : null}
+
+      <FindingList findings={deterministic?.findings} />
+
+      <div className="ws-card-head" style={{ marginTop: 16 }}>
+        <span className="ws-stat-label">
+          Semantic review{semantic?.provider && semantic.status === 'ok' ? ` · ${semantic.provider}${semantic.model ? ` · ${semantic.model}` : ''}` : ''}
+        </span>
+        {semanticTag}
+      </div>
+
+      {semantic?.status === 'unavailable' ? (
+        <Banner tone="warn" title="The semantic check did not run">
+          {semantic.message || 'Agnes could not be reached.'} The rule checks above still apply — try again.
+        </Banner>
+      ) : null}
+      {semantic && semanticStale && semantic.status === 'ok' ? (
+        <Banner tone="warn">
+          The facts changed after this review. Its findings are shown for reference but no longer count —
+          validate again.
+        </Banner>
+      ) : null}
+      {semantic?.status === 'ok' && semantic.message ? (
+        <small style={{ color: 'var(--muted)', display: 'block', marginBottom: 8 }}>{semantic.message}</small>
+      ) : null}
+      {semantic?.summary && !semanticStale ? (
+        <p style={{ marginTop: 0, fontSize: 13.5 }}>{semantic.summary}</p>
+      ) : null}
+      <FindingList findings={semantic?.findings} />
+
+      <ErrorBanner error={error} title="Validation could not be run" />
+      {!superseded ? (
+        <div className="ws-asset-foot" style={{ marginTop: 12 }}>
+          <button type="button" className="ws-btn" onClick={onValidate} disabled={pending || dirty}>
+            {pending ? <Spinner label="Validating…" /> : <><ScanSearch size={14} /> Validate the saved facts</>}
+          </button>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * The FactSheet as JSON. It mirrors the form: with no unsaved edits it is the
+ * stored, schema-validated sheet; while editing it is what "Save" would send.
+ */
+function FactsJsonCard({ json, dirty, status, validation }) {
+  const [copied, setCopied] = useState(false);
+  const text = useMemo(() => JSON.stringify(json, null, 2), [json]);
+
+  useEffect(() => {
+    if (!copied) return undefined;
+    const timer = setTimeout(() => setCopied(false), 1800);
+    return () => clearTimeout(timer);
+  }, [copied]);
+
+  const schemaOk = validation?.deterministic && validation.deterministic.status !== 'failed';
+
+  return (
+    <div className="ws-card">
+      <div className="ws-card-head">
+        <h3>
+          <Braces size={15} style={{ verticalAlign: -2, marginRight: 6 }} />
+          FactSheet JSON
+        </h3>
+        <div className="ws-chips">
+          {dirty ? (
+            <span className="ws-tag is-review">Unsaved edits — preview of what will be saved</span>
+          ) : (
+            <span className={`ws-tag ${schemaOk ? 'is-pass' : ''}`}>
+              Stored · {status}
+              {schemaOk ? ' · schema-valid' : ''}
+            </span>
+          )}
+          <button
+            type="button"
+            className="ws-btn is-ghost is-small"
+            onClick={async () => setCopied(await copyText(text))}
+          >
+            {copied ? <><Check size={12} /> Copied</> : <><Copy size={12} /> Copy JSON</>}
+          </button>
+        </div>
+      </div>
+      <pre className="ws-json" tabIndex={0} aria-label="FactSheet JSON">{text}</pre>
+      <small style={{ color: 'var(--muted)', display: 'block', marginTop: 8 }}>
+        Only these facts feed the campaign. Empty values stay empty — nothing is filled in for you.
+      </small>
     </div>
   );
 }

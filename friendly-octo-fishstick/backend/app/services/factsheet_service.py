@@ -46,6 +46,7 @@ from .fact_engine import (
     verify_locked_payload,
 )
 from .fact_schemas import FactSheet, FactSheetPatch
+from .fact_validation import blocking_findings, refresh_deterministic, stored_validation
 
 
 def _dump(value: Any) -> str:
@@ -126,8 +127,10 @@ def serialize_sheet(
 
     extraction = None
     raw_extraction = _load(sheet.extraction_json)
-    if raw_extraction:
-        extraction = ExtractionStatus(**raw_extraction)
+    if raw_extraction and raw_extraction.get("status"):
+        extraction = ExtractionStatus(
+            **{k: v for k, v in raw_extraction.items() if k in ExtractionStatus.model_fields}
+        )
 
     return FactSheetRead(
         id=sheet.id,
@@ -141,6 +144,7 @@ def serialize_sheet(
         seal_algorithm=seal_algorithm,
         seal_valid=seal_valid,
         extraction=extraction,
+        validation=stored_validation(sheet),
         created_at=sheet.created_at,
         updated_at=sheet.updated_at,
         locked_at=sheet.locked_at,
@@ -297,6 +301,10 @@ def apply_patch(
         audit(db, sheet.campaign_id, "factsheet.edited", {"version": sheet.version, "changed": changed})
         target = sheet
 
+    # Deterministic validation follows every edit; a previous Agnes report is
+    # kept but marked stale until it is re-run against the edited facts.
+    refresh_deterministic(target)
+
     if campaign is not None:
         campaign.status = CampaignStatus.EXTRACTED
     db.commit()
@@ -335,6 +343,16 @@ def lock_sheet(
             details={"missing": blockers},
         )
 
+    # Only facts that pass deterministic validation may be locked. Agnes'
+    # semantic findings are advisory and are confirmed by the owner locking.
+    invalid = blocking_findings(normalized)
+    if invalid:
+        raise ValidationError(
+            "Cannot lock: " + " ".join(item["message"] for item in invalid),
+            code="facts_invalid",
+            details={"findings": invalid},
+        )
+
     payload = canonical_payload(normalized)
     canonical = canonical_json(payload)
     fact_hash = compute_fact_hash(canonical)
@@ -342,6 +360,7 @@ def lock_sheet(
     tokens = compile_tokens(payload)
 
     sheet.draft_json = _dump(normalized.model_dump(mode="json"))
+    refresh_deterministic(sheet)
     sheet.facts_json = canonical
     sheet.tokens_json = _dump(tokens)
     sheet.fact_hash = fact_hash

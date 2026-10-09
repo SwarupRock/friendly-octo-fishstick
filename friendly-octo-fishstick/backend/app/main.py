@@ -21,6 +21,7 @@ from .api import (
     publisher,
     stt_stream,
     videos,
+    voice_turn,
     voice_profiles,
 )
 from .config import get_settings
@@ -59,6 +60,30 @@ async def lifespan(_: FastAPI):
         logger.error(
             "TITAN_MODE=live without a durable TITAN_AUTH_SECRET: "
             "authentication endpoints will refuse to issue sessions."
+        )
+    if not settings.is_mock:
+        # Live mode never substitutes a mock for a missing provider, so say
+        # at startup which features will fail (key values are never logged).
+        if not settings.agnes_configured:
+            logger.error(
+                "TITAN_MODE=live but Agnes is not configured (TITAN_AGNES_API_BASE / "
+                "TITAN_AGNES_API_KEY): extraction, validation, planning, image and "
+                "video generation will return errors."
+            )
+        if not settings.sarvam_configured:
+            logger.error(
+                "TITAN_MODE=live but TITAN_SARVAM_API_KEY is not set: speech-to-text "
+                "and text-to-speech will return errors."
+            )
+        if settings.stt_provider == "faster-whisper":
+            logger.warning(
+                "TITAN_STT_PROVIDER=faster-whisper is a legacy option; Sarvam is the "
+                "supported speech provider (TITAN_STT_PROVIDER=sarvam)."
+            )
+    elif settings.agnes_configured or settings.sarvam_configured:
+        logger.warning(
+            "Provider keys are set but TITAN_MODE=mock: all providers are mocked. "
+            "Set TITAN_MODE=live to use Agnes and Sarvam."
         )
     yield
 
@@ -125,6 +150,7 @@ def create_app() -> FastAPI:
     app.include_router(assets.router, prefix="/api")
     app.include_router(voice_profiles.router, prefix="/api")
     app.include_router(videos.router, prefix="/api")
+    app.include_router(voice_turn.router, prefix="/api")
     app.include_router(guardian_api.router, prefix="/api")
     app.include_router(publisher.router, prefix="/api")
 

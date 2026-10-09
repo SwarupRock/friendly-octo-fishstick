@@ -178,33 +178,42 @@ class BaseProvider(abc.ABC):
 
     name: str = "base"
     kind: str = "generic"
-    @property
-    def interface_verified(self) -> bool:
-        return False
+    capabilities: tuple[str, ...] = ()
+    #: Mock-mode description of what stands in for the live provider.
+    mock_detail: str = "Mock mode: a labelled offline provider is used."
+    missing_detail: str = "Not configured."
+    #: False for slots that have no live integration in this build.
+    has_live_integration: bool = True
 
     def is_configured(self, settings: Settings) -> bool:
         return False
 
     def status(self, settings: Settings) -> ProviderStatus:
         configured = self.is_configured(settings)
+        # A slot describes the *live* provider: in mock mode it is never
+        # reported as available, even with keys present (a labelled mock
+        # stands in — see `detail`).
+        available = self.has_live_integration and not settings.is_mock and configured
         return ProviderStatus(
             name=self.name,
             kind=self.kind,
             mode=settings.titan_mode,
             configured=configured,
-            available=configured and self.interface_verified,
-            verified=self.interface_verified,
+            available=available,
+            verified=available,
             detail=self._detail(settings, configured),
             capabilities=list(self.capabilities),
         )
 
     def _detail(self, settings: Settings, configured: bool) -> str:
-        if not self.interface_verified:
-            return (
-                "Interface unverified — provider-specific calls are disabled "
-                "until the real API and credentials are confirmed."
-            )
-        return "Configured." if configured else "Not configured."
+        if not self.has_live_integration:
+            return "No live integration in this build."
+        if settings.is_mock:
+            return self.mock_detail
+        return self.live_detail(settings) if configured else self.missing_detail
+
+    def live_detail(self, settings: Settings) -> str:
+        return "Configured — live calls enabled."
 
 
 class AgnesProvider(BaseProvider):
@@ -212,63 +221,77 @@ class AgnesProvider(BaseProvider):
 
     name = "agnes_llm"
     kind = "llm"
-    capabilities = ("fact_extraction", "campaign_brain", "copy", "localization")
+    capabilities = ("fact_extraction", "fact_validation", "campaign_director", "copy", "localization")
+    mock_detail = "Mock mode: deterministic, labelled extraction and campaign templates."
+    missing_detail = "Not configured: set TITAN_AGNES_API_BASE and TITAN_AGNES_API_KEY."
+
+    def live_detail(self, settings: Settings) -> str:
+        return f"Agnes text model {settings.agnes_text_model} — live calls enabled."
 
     def is_configured(self, settings: Settings) -> bool:
         return bool(settings.agnes_api_base and settings.agnes_api_key)
 
-    @property
-    def interface_verified(self) -> bool:
-        import os
-        return os.environ.get("TITAN_AGNES_INTERFACE_VERIFIED") == "1"
 
 
 class AgnesImageProvider(BaseProvider):
     name = "agnes_image"
     kind = "image"
     capabilities = ("poster_art",)
+    mock_detail = "Mock mode: posters use labelled fallback art (no image model)."
+    missing_detail = "Not configured: set TITAN_AGNES_API_BASE and TITAN_AGNES_API_KEY."
+
+    def live_detail(self, settings: Settings) -> str:
+        return f"Agnes image model {settings.agnes_image_model} — live calls enabled."
 
     def is_configured(self, settings: Settings) -> bool:
         return bool(settings.agnes_api_base and settings.agnes_api_key)
 
-    @property
-    def interface_verified(self) -> bool:
-        import os
-        return os.environ.get("TITAN_AGNES_INTERFACE_VERIFIED") == "1"
 
 
 class AgnesVideoProvider(BaseProvider):
     name = "agnes_video"
     kind = "video"
     capabilities = ("short_video",)
+    mock_detail = "Mock mode: video jobs run against a labelled mock provider."
+    missing_detail = "Not available: set the Agnes key and TITAN_ENABLE_AGNES_VIDEO=true."
+
+    def live_detail(self, settings: Settings) -> str:
+        if settings.video_engine == "magichour":
+            return (
+                f"Magic Hour text-to-video (model {settings.magichour_model}, "
+                f"{len(settings.magichour_api_keys)} key(s)) — live async jobs enabled."
+            )
+        return f"Agnes video model {settings.agnes_video_model} — live async jobs enabled."
 
     def is_configured(self, settings: Settings) -> bool:
-        return bool(settings.agnes_api_base and settings.agnes_api_key and settings.enable_agnes_video)
+        if not settings.enable_agnes_video:
+            return False
+        if settings.video_engine == "magichour":
+            return settings.magichour_configured
+        return bool(settings.agnes_api_base and settings.agnes_api_key)
 
-    @property
-    def interface_verified(self) -> bool:
-        import os
-        return os.environ.get("TITAN_AGNES_INTERFACE_VERIFIED") == "1"
 
 
 class VoiceProviderSlot(BaseProvider):
     name = "voice"
     kind = "voice"
     capabilities = ("tts", "voice_clone")
+    mock_detail = "Mock mode: speech is a labelled test tone (no real voice)."
+    missing_detail = "Not configured: set TITAN_SARVAM_API_KEY."
+
+    def live_detail(self, settings: Settings) -> str:
+        return "Sarvam Bulbul text-to-speech — live calls enabled."
 
     def is_configured(self, settings: Settings) -> bool:
         return bool(settings.sarvam_api_key)
 
-    @property
-    def interface_verified(self) -> bool:
-        import os
-        return os.environ.get("TITAN_SARVAM_INTERFACE_VERIFIED") == "1"
 
 
 class PublisherProviderSlot(BaseProvider):
     name = "publisher"
     kind = "publishing"
     capabilities = ("sandbox", "wa_me", "agent_reach")
+    has_live_integration = False
 
 
 class ProviderGateway:
@@ -308,8 +331,8 @@ class ProviderGateway:
         """
         provider = self.get(name)
         raise ProviderUnavailableError(
-            f"Provider '{provider.name}' integration is unverified in Phase 1.",
-            details={"provider": provider.name, "interface_verified": False},
+            f"Provider '{provider.name}' has no generic call interface; use its service module.",
+            details={"provider": provider.name},
         )
 
 

@@ -154,11 +154,13 @@ export function useBackendStatus({ intervalMs = 30_000 } = {}) {
  * `<img src>`. Fetch the blob, hand back an object URL, and revoke it on
  * unmount so repeated previews do not leak memory.
  */
-export function useAssetObjectUrl(assetId, { enabled = true } = {}) {
+export function useAssetObjectUrl(assetId, { enabled = true, nonce = 0 } = {}) {
   const [url, setUrl] = useState(null);
   const [error, setError] = useState(null);
 
   useEffect(() => {
+    // `nonce` lets a player retry a failed download.
+    setError(null);
     if (!assetId || !enabled) return undefined;
     const controller = new AbortController();
     let active = true;
@@ -183,9 +185,58 @@ export function useAssetObjectUrl(assetId, { enabled = true } = {}) {
       controller.abort();
       if (created) URL.revokeObjectURL(created);
     };
-  }, [assetId, enabled]);
+  }, [assetId, enabled, nonce]);
 
   return { url, error };
+}
+
+/**
+ * Call `callback` every `intervalMs` while `active` is true.
+ *
+ * The latest callback is always used without restarting the timer, and the
+ * timer stops as soon as `active` turns false (or the component unmounts), so
+ * a finished job is never polled again.
+ */
+export function usePolling(callback, { active, intervalMs = 5000 }) {
+  const saved = useRef(callback);
+  useEffect(() => {
+    saved.current = callback;
+  }, [callback]);
+
+  useEffect(() => {
+    if (!active) return undefined;
+    const timer = setInterval(() => {
+      // Skip ticks while the tab is hidden; state lives on the server anyway.
+      if (typeof document === 'undefined' || !document.hidden) saved.current();
+    }, intervalMs);
+    return () => clearInterval(timer);
+  }, [active, intervalMs]);
+}
+
+/** Copy text to the clipboard; resolves to whether it worked. */
+export async function copyText(text) {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+    // Fall through to the legacy path (insecure context, denied permission).
+  }
+  try {
+    const area = document.createElement('textarea');
+    area.value = text;
+    area.setAttribute('readonly', '');
+    area.style.position = 'fixed';
+    area.style.opacity = '0';
+    document.body.appendChild(area);
+    area.select();
+    const ok = document.execCommand('copy');
+    area.remove();
+    return ok;
+  } catch {
+    return false;
+  }
 }
 
 /** Short-lived status message with an error flavour. */

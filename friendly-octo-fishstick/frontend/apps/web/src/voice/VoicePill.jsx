@@ -155,6 +155,7 @@ export default function VoicePill({
   maxSeconds = 0,
   iconSize = 0,
   disabled = false,
+  holdKey = '',
   ariaLabel = 'Dictate',
   getLevel = null,
   onStart,
@@ -319,6 +320,8 @@ export default function VoicePill({
       end('escape');
       return;
     }
+    // With a global hold key, Space belongs to push-to-talk (see below).
+    if (holdKey === 'Space' && e.key === ' ') return;
     if ((e.key === ' ' || e.key === 'Enter') && !e.repeat) {
       e.preventDefault();
       if (st.current.listening) end('key');
@@ -347,6 +350,52 @@ export default function VoicePill({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pressed]);
+
+  // Push-to-talk from the keyboard: hold `holdKey` anywhere on the page to
+  // record, let go to send. A stray tap (shorter than MIN_KEY_HOLD) is
+  // discarded rather than sent as an empty clip.
+  useEffect(() => {
+    if (!holdKey) return undefined;
+    const MIN_KEY_HOLD = 250;
+    let down = false;
+    let downAt = 0;
+    const typing = (target) =>
+      target instanceof HTMLElement &&
+      (target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName));
+    const onDown = (e) => {
+      if (e.code !== holdKey || e.ctrlKey || e.metaKey || e.altKey || typing(e.target)) return;
+      e.preventDefault(); // no page scroll, no click on a focused button
+      if (e.repeat || down || disabled || st.current.listening) return;
+      down = true;
+      downAt = performance.now();
+      if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+      setPressed(true);
+      begin('key');
+    };
+    const onUp = (e) => {
+      if (e.code !== holdKey) return;
+      e.preventDefault();
+      if (!down) return;
+      down = false;
+      setPressed(false);
+      end(performance.now() - downAt < MIN_KEY_HOLD ? 'cancel' : 'release');
+    };
+    const onBlur = () => {
+      if (!down) return;
+      down = false;
+      setPressed(false);
+      end('cancel');
+    };
+    window.addEventListener('keydown', onDown);
+    window.addEventListener('keyup', onUp);
+    window.addEventListener('blur', onBlur);
+    return () => {
+      window.removeEventListener('keydown', onDown);
+      window.removeEventListener('keyup', onUp);
+      window.removeEventListener('blur', onBlur);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [holdKey, disabled]);
 
   useEffect(() => {
     if (disabled) end('disabled');

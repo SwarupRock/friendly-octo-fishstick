@@ -6,6 +6,7 @@ import {
   FileImage,
   Info,
   Loader2,
+  RotateCcw,
   ShieldAlert,
   ShieldCheck,
   XCircle,
@@ -155,6 +156,134 @@ export function AssetImage({ assetId, alt }) {
   return (
     <div className="ws-asset-media">
       <img src={url} alt={alt} />
+    </div>
+  );
+}
+
+/**
+ * Authenticated audio player with an explicit replay control.
+ *
+ * The bytes are fetched with the session token (see `useAssetObjectUrl`); a
+ * failed download or an undecodable file is shown as an error with a retry,
+ * never as a silent, dead player.
+ */
+export function AssetAudio({ assetId, label = 'Generated audio' }) {
+  const [attempt, setAttempt] = React.useState(0);
+  const [playError, setPlayError] = React.useState('');
+  const ref = React.useRef(null);
+  const { url, error } = useAssetObjectUrl(assetId, { enabled: true, nonce: attempt });
+
+  const retry = () => {
+    setPlayError('');
+    setAttempt((value) => value + 1);
+  };
+
+  if (error || playError) {
+    return (
+      <div className="ws-player is-error" role="alert">
+        <small>Audio unavailable: {playError || errorMessage(error)}</small>
+        <button type="button" className="ws-btn is-ghost is-small" onClick={retry}>
+          <RotateCcw size={12} /> Retry
+        </button>
+      </div>
+    );
+  }
+  if (!url) {
+    return (
+      <div className="ws-player">
+        <Loader2 size={16} className="ws-rotate" aria-hidden="true" />
+        <small>Loading audio…</small>
+      </div>
+    );
+  }
+  const replay = () => {
+    const element = ref.current;
+    if (!element) return;
+    element.currentTime = 0;
+    element.play().catch(() => setPlayError('The browser could not play this audio.'));
+  };
+  return (
+    <div className="ws-player">
+      <audio
+        ref={ref}
+        controls
+        preload="metadata"
+        src={url}
+        aria-label={label}
+        onError={() => setPlayError('The file could not be decoded.')}
+      >
+        <track kind="captions" />
+      </audio>
+      <button type="button" className="ws-btn is-ghost is-small" onClick={replay} aria-label={`Replay ${label}`}>
+        <RotateCcw size={12} /> Replay
+      </button>
+    </div>
+  );
+}
+
+/** Authenticated video player. `playable=false` marks a demo container. */
+export function AssetVideo({ assetId, playable = true }) {
+  const [attempt, setAttempt] = React.useState(0);
+  const [playError, setPlayError] = React.useState('');
+  const { url, error } = useAssetObjectUrl(assetId, { enabled: playable, nonce: attempt });
+
+  if (!playable) {
+    return (
+      <div className="ws-asset-media" style={{ padding: 16, textAlign: 'center' }}>
+        <small style={{ color: 'var(--muted)' }}>
+          Demo job output — mock mode stores an empty video container. Run in live mode for real footage.
+        </small>
+      </div>
+    );
+  }
+  if (error || playError) {
+    return (
+      <div className="ws-asset-media" style={{ padding: 16, textAlign: 'center' }} role="alert">
+        <small style={{ color: 'var(--muted)' }}>Video unavailable: {playError || errorMessage(error)}</small>
+        <button
+          type="button"
+          className="ws-btn is-ghost is-small"
+          onClick={() => {
+            setPlayError('');
+            setAttempt((value) => value + 1);
+          }}
+        >
+          <RotateCcw size={12} /> Retry
+        </button>
+      </div>
+    );
+  }
+  if (!url) {
+    return (
+      <div className="ws-asset-media">
+        <Loader2 size={20} className="ws-rotate" aria-hidden="true" />
+        <span className="sr-only">Loading video</span>
+      </div>
+    );
+  }
+  return (
+    <div className="ws-asset-media is-video">
+      <video controls preload="metadata" src={url} onError={() => setPlayError('The file could not be decoded.')}>
+        <track kind="captions" />
+      </video>
+    </div>
+  );
+}
+
+/** Thin determinate/indeterminate progress bar for long-running jobs. */
+export function ProgressBar({ value, label }) {
+  const known = typeof value === 'number' && Number.isFinite(value);
+  const clamped = known ? Math.max(0, Math.min(100, value)) : null;
+  return (
+    <div
+      className={`ws-progress ${known ? '' : 'is-indeterminate'}`}
+      role="progressbar"
+      aria-label={label}
+      aria-valuemin={0}
+      aria-valuemax={100}
+      {...(known ? { 'aria-valuenow': clamped } : {})}
+    >
+      <i style={known ? { width: `${Math.max(clamped, 4)}%` } : undefined} />
     </div>
   );
 }

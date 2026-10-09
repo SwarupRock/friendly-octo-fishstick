@@ -96,6 +96,9 @@ class FactSheetRead(BaseModel):
     #: Recomputed seal check; null when no seal secret is configured.
     seal_valid: bool | None = None
     extraction: ExtractionStatus | None = None
+    #: Deterministic + Agnes semantic validation (see services/fact_validation).
+    #: `stale` is true when the facts changed after it was computed.
+    validation: dict[str, Any] | None = None
     created_at: datetime
     updated_at: datetime
     locked_at: datetime | None = None
@@ -127,6 +130,18 @@ class CampaignSummary(BaseModel):
     has_transcript: bool
     created_at: datetime
     updated_at: datetime
+
+
+class TypedTranscriptIn(BaseModel):
+    """POST /api/campaigns/{id}/transcript — typed recovery after STT failure."""
+
+    text: str = Field(min_length=1, max_length=MAX_TEXT_LENGTH)
+    language_hint: str | None = Field(default=None, max_length=16)
+
+    @field_validator("text")
+    @classmethod
+    def _clean_text(cls, value: str) -> str:
+        return value.strip()
 
 
 class HealthResponse(BaseModel):

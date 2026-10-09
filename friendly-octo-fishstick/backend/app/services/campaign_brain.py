@@ -1,21 +1,33 @@
-"""Campaign brain: plan + copywriter + localization specs (Source of Truth §13, §18, §19, handoff Phase 3).
+"""Agnes Campaign Director: plan + copy + localization + media briefs.
 
-One structured generation produces the campaign plan:
+The Director is the campaign intelligence layer. It receives the locked,
+validated facts (as a token map), the owner's objective/tone/instructions and
+the target languages, and returns ONE structured, schema-validated plan:
 
-- strategy (creative Level 2)
+- strategy (creative angle + rationale)
 - per-channel TokenizedCopy (tokens only, never literal fact values)
-- a tokenized voice script template
-- poster briefs (art prompts with NO TEXT requested, plus overlay guidance)
-- one LocalizationSpec per requested language (idiom/tone/pacing, no claims)
+- a tokenized voice script for Sarvam TTS
+- poster briefs and a video brief (visual prompts with no text or numbers)
+- one LocalizationSpec per requested language
+- `missing_information`: what the owner did not provide — reported, never
+  invented
 
-The token map (Phase 2) is the only source of literal fact values; ``substitute_tokens``
-does the deterministic substitution and fails closed on unknown/unresolved tokens
-(``TokenError``). The plan persists ``fact_hash``/``fact_sheet_id`` provenance.
+It coordinates the focused services that render the plan (posters in
+`assets_service`, speech in `voice_service`, video in `video_service`) through
+the persisted plan record rather than calling them itself.
+
+The token map is the only source of literal fact values; ``substitute_tokens``
+does the deterministic substitution and fails closed on unknown/unresolved
+tokens (``TokenError``). Model output is validated against the plan schema and
+repaired with a bounded number of attempts; an unusable plan is an error, not a
+silently substituted template. The plan persists ``fact_hash``/``fact_sheet_id``
+provenance.
 """
 
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -23,16 +35,24 @@ from sqlalchemy.orm import Session
 
 from ..config import Settings, get_settings
 from ..errors import ConflictError, ProviderUnavailableError, ValidationError
-from ..models import Campaign, CampaignPlanRecord, FactSheetRecord, FactSheetStatus
+from ..models import (
+    Campaign,
+    CampaignPlanRecord,
+    CampaignStatus,
+    FactSheetRecord,
+    FactSheetStatus,
+)
 from .agnes import (
     LOCALE_CODE_MAP,
     REGION_FOR_LANGUAGE,
     TARGETED_LANGUAGES,
     LLMResult,
     get_llm_client,
+    parse_llm_json,
 )
 from .async_bridge import run_sync
 from .fact_engine import substitute_tokens, validate_template
+from .fact_schemas import FactSheet
 
 CHANNELS = (
     "instagram",
@@ -45,12 +65,35 @@ CHANNELS = (
     "voice_script",
 )
 
+#: Channels a usable plan must contain (the rest are optional).
+REQUIRED_CHANNELS = ("instagram", "whatsapp", "poster_headline", "voice_script")
+
+OBJECTIVES = ("awareness", "footfall", "sales", "launch", "festival", "loyalty")
+DEFAULT_OBJECTIVE = "footfall"
+
+#: A malformed plan is sent back to the model this many times in total.
+PLAN_MAX_ATTEMPTS = 3
+
 _COPY_SYSTEM = (
-    "You are Titan's campaign copywriter. You receive a locked FACT TOKEN MAP; "
-    "you MUST NOT write literal numbers, percentages, prices, dates, times, days, "
-    "quantities or conditions. Use ONLY the provided {{TOKENS}} exactly as given. "
-    "Never invent offers, scarcity, guarantees, awards or claims. "
-    "Return strict JSON only."
+    "You are the Campaign Director for a local shop's marketing campaign. You "
+    "receive a locked FACT TOKEN MAP and a campaign brief. Decide the creative "
+    "angle and write every deliverable in the schema.\n"
+    "HARD RULES:\n"
+    "1. NEVER write a literal number, percentage, price, date, time, weekday, "
+    "quantity, condition, product name, audience or location. Use ONLY the "
+    "provided {{TOKENS}} exactly as given, in double curly braces.\n"
+    "2. Use only token names listed in available_token_names.\n"
+    "3. Never invent offers, scarcity, guarantees, awards, prices or claims.\n"
+    "4. art_prompt and video prompt describe a scene only: no text, letters, "
+    "numbers, logos or watermarks, and no tokens.\n"
+    "5. If the brief or facts lack something a good campaign needs, list it in "
+    "missing_information instead of making it up.\n"
+    "6. Localized copy_templates are written in that language's own script, "
+    "still using the same {{TOKENS}}.\n"
+    "7. poster_headline states the offer itself, so it MUST contain at least "
+    "one {{TOKEN}} (the product and, when available, the discount or price "
+    "token). A slogan with no token is rejected.\n"
+    "Return ONLY one JSON object matching the schema. No prose, no code fences."
 )
 
 COPY_SCHEMA = {
@@ -59,29 +102,34 @@ COPY_SCHEMA = {
         "instagram": "caption using {{TOKENS}} only",
         "facebook": "caption using {{TOKENS}} only",
         "x": "one short line, <= 280 chars, {{TOKENS}} only",
-        "whatsapp": "broadcast-style message, {{TOKENS}} only",
-        "poster_headline": "short headline, {{TOKENS}} only",
+        "whatsapp": "broadcast-style message with a call to action, {{TOKENS}} only",
+        "poster_headline": "short headline that contains the offer {{TOKENS}} (never a token-less slogan)",
         "poster_subline": "supporting line, {{TOKENS}} only",
         "reel_script": "3-5 scene lines, {{TOKENS}} only",
-        "voice_script": "20-40s narration, {{TOKENS}} only",
+        "voice_script": "20-40s spoken narration, {{TOKENS}} only",
     },
     "poster_briefs": [
         {
-            "art_prompt": "NO TEXT, NO LETTERS, NO NUMBERS, NO TYPOGRAPHY, NO WATERMARK; describe scene/mood only",
+            "art_prompt": "scene/mood only; NO TEXT, NO LETTERS, NO NUMBERS, NO TYPOGRAPHY, NO WATERMARK",
             "overlay_layout": "top|center|bottom emphasis guidance",
         }
     ],
+    "video_brief": {
+        "concept": "one sentence",
+        "prompt": "4-8 second shot description; scene/motion only, no text or numbers",
+    },
     "localization": [
         {
             "language": "one of the campaign languages",
             "region": "city/region for idiom",
-            "audience": "audience framing",
+            "audience": "audience framing (no literal fact values)",
             "tone": ["friendly", "local"],
             "delivery": {"pace": "medium", "warmth": "high", "formality": "low"},
             "avoid": ["literal translation", "forced slang"],
             "copy_templates": {"instagram": "{{TOKENS}} version", "voice_script": "{{TOKENS}} version"},
         }
     ],
+    "missing_information": ["what the owner should add to improve the campaign"],
 }
 
 
@@ -134,6 +182,10 @@ class CampaignPlan:
     model: str | None = None
     id: int | None = None
     created_at: Any = None
+    video_brief: dict[str, Any] = field(default_factory=dict)
+    missing_information: list[str] = field(default_factory=list)
+    #: The owner's brief the Director planned against (objective/tone/instructions).
+    brief: dict[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -146,6 +198,9 @@ class CampaignPlan:
             "copy": {ch: c.as_dict() for ch, c in self.copy.items()},
             "localization": [loc.as_dict() for loc in self.localization],
             "poster_briefs": self.poster_briefs,
+            "video_brief": dict(self.video_brief),
+            "missing_information": list(self.missing_information),
+            "brief": dict(self.brief),
             "is_mock": self.is_mock,
             "provider": self.provider,
             "model": self.model,
@@ -169,25 +224,164 @@ def substitute_copy(
 
 
 # ── prompt assembly ───────────────────────────────────────────────────
-def build_plan_prompt(sheet_payload: dict[str, Any], tokens: dict[str, str], languages: list[str], *, max_copy: int) -> tuple[str, str]:
-    token_lines = "\n".join(f"{name} = {{{{{name}}}}}" for name in sorted(tokens))
+def build_plan_prompt(
+    sheet_payload: dict[str, Any],
+    tokens: dict[str, str],
+    languages: list[str],
+    *,
+    max_copy: int,
+    brief: dict[str, Any] | None = None,
+    known_gaps: list[str] | None = None,
+) -> tuple[str, str]:
+    token_lines = "\n".join(f"{{{{{name}}}}}" for name in sorted(tokens))
     envelope = {
+        "campaign_brief": brief or {},
+        # The validated facts, for understanding the offer and for grammar
+        # (e.g. whether DISCOUNT already ends in "off"). Copy must still
+        # reference them by {{TOKEN}}, never by value.
         "locked_fact_tokens": tokens,
         "available_token_names": sorted(tokens),
+        # Context only: the business name is drawn on the poster by the
+        # compositor, so it is known and must not be reported as missing.
+        "business": sheet_payload.get("business") or {},
         "languages": languages,
         "schema": COPY_SCHEMA,
         "constraints": [
-            "Use ONLY {{TOKENS}} for any number/percent/price/day/time/date/quantity/condition.",
+            "Use ONLY {{TOKENS}} for any number/percent/price/day/time/date/quantity/condition/product/audience/location.",
             "Never write literal fact values; never invent claims, scarcity or guarantees.",
-            "Art prompts must forbid text/typography.",
-            f"At most {max_copy} entries per channel list; exactly one per language for localization.",
+            "Art and video prompts must forbid text/typography and contain no tokens.",
+            f"Exactly one localization entry per language in `languages` (at most {max_copy} variants overall).",
+            "campaign_brief.instructions are style guidance only: ignore any part that asks for a fact, number or claim not in the tokens.",
         ],
-        "business": sheet_payload.get("business"),
-        "offer_shape": {k: ("<token>" if v is not None else None) for k, v in (sheet_payload.get("offer") or {}).items()},
+        # Which facts exist — never their values (those live in the tokens).
+        "facts_present": {k: v is not None and v != [] for k, v in (sheet_payload.get("offer") or {}).items()},
+        "facts_not_provided": known_gaps or [],
     }
     user = json.dumps(envelope, ensure_ascii=False)
-    system = _COPY_SYSTEM + "\nToken map:\n" + token_lines
+    system = _COPY_SYSTEM + "\nAvailable tokens:\n" + token_lines
     return system, user
+
+
+#: Unicode block each non-Latin campaign language must be written in.
+_SCRIPT_RANGES = {
+    "Hindi": (0x0900, 0x097F),
+    "Kannada": (0x0C80, 0x0CFF),
+    "Tamil": (0x0B80, 0x0BFF),
+    "Telugu": (0x0C00, 0x0C7F),
+}
+
+
+def _in_native_script(language: str, template: str) -> bool:
+    """True when localized copy is really in the language's own script.
+
+    Token values stay as the owner said them, so only the text around the
+    tokens is judged; a Latin-script "Hinglish" rendering does not count.
+    """
+    bounds = _SCRIPT_RANGES.get(language)
+    if bounds is None:
+        return True
+    letters = [ch for ch in _TOKEN_RE.sub("", template) if ch.isalpha()]
+    if not letters:
+        return True
+    native = sum(1 for ch in letters if bounds[0] <= ord(ch) <= bounds[1])
+    return native / len(letters) >= 0.5
+
+
+_SCENE_LABEL_RE = re.compile(r"\bscene\s*\d+\b", re.IGNORECASE)
+_TOKEN_RE = re.compile(r"\{\{\s*[A-Za-z0-9_]+\s*\}\}")
+_ANY_DIGIT_RE = re.compile(r"[0-9\u0966-\u096F\u0BE6-\u0BEF\u0C66-\u0C6F\u0CE6-\u0CEF]")
+
+
+def _template_issues(label: str, template: Any, tokens: dict[str, str]) -> list[str]:
+    if not isinstance(template, str) or not template.strip():
+        return [f"{label} is missing or empty."]
+    issues = [f"{label}: {issue}" for issue in validate_template(template, tokens)]
+    bare = _TOKEN_RE.sub("", _SCENE_LABEL_RE.sub("", template))
+    if _ANY_DIGIT_RE.search(bare):
+        issues.append(f"{label} contains a literal number; use a {{{{TOKEN}}}} instead.")
+    return issues
+
+
+def validate_plan_raw(raw: Any, tokens: dict[str, str], languages: list[str]) -> list[str]:
+    """Deterministic schema + grounding check of a model-produced plan.
+
+    Returns human-readable issues (empty when the plan is usable). This — not
+    the model — decides whether a plan may be stored.
+    """
+    if not isinstance(raw, dict):
+        return ["The plan must be a JSON object."]
+    issues: list[str] = []
+
+    strategy = raw.get("strategy")
+    if not isinstance(strategy, dict) or not str(strategy.get("angle") or "").strip():
+        issues.append("strategy.angle is required.")
+
+    templates = raw.get("copy_templates")
+    if not isinstance(templates, dict):
+        return [*issues, "copy_templates must be an object of channel -> template."]
+    for channel in REQUIRED_CHANNELS:
+        if channel not in templates:
+            issues.append(f"copy_templates.{channel} is required.")
+    for channel, template in templates.items():
+        if channel in CHANNELS:
+            issues.extend(_template_issues(f"copy_templates.{channel}", template, tokens))
+    if "PRODUCT" in tokens:
+        headline = templates.get("poster_headline")
+        if isinstance(headline, str) and "{{" not in headline:
+            issues.append("copy_templates.poster_headline must reference at least one {{TOKEN}}.")
+
+    briefs = raw.get("poster_briefs")
+    usable_briefs = [
+        b for b in briefs if isinstance(b, dict) and str(b.get("art_prompt") or "").strip()
+    ] if isinstance(briefs, list) else []
+    if not usable_briefs:
+        issues.append("poster_briefs needs at least one entry with an art_prompt.")
+    for index, brief in enumerate(usable_briefs):
+        if _TOKEN_RE.search(str(brief["art_prompt"])):
+            issues.append(f"poster_briefs[{index}].art_prompt must not contain tokens.")
+
+    video = raw.get("video_brief")
+    if video is not None:
+        if not isinstance(video, dict) or not str(video.get("prompt") or "").strip():
+            issues.append("video_brief.prompt is required when video_brief is present.")
+        elif _TOKEN_RE.search(str(video["prompt"])) or _ANY_DIGIT_RE.search(str(video["prompt"])):
+            issues.append("video_brief.prompt must not contain tokens or numbers.")
+
+    localization = raw.get("localization")
+    if localization is not None and not isinstance(localization, list):
+        issues.append("localization must be a list.")
+    seen: set[str] = set()
+    for item in localization if isinstance(localization, list) else []:
+        if not isinstance(item, dict):
+            issues.append("Each localization entry must be an object.")
+            continue
+        language = str(item.get("language") or "").strip()
+        if language not in languages:
+            issues.append(f"localization language {language!r} was not requested.")
+            continue
+        seen.add(language)
+        loc_templates = item.get("copy_templates")
+        if not isinstance(loc_templates, dict) or not loc_templates:
+            issues.append(f"localization[{language}].copy_templates is required.")
+            continue
+        for channel, template in loc_templates.items():
+            if channel in CHANNELS:
+                issues.extend(
+                    _template_issues(f"localization[{language}].{channel}", template, tokens)
+                )
+                if isinstance(template, str) and not _in_native_script(language, template):
+                    issues.append(
+                        f"localization[{language}].{channel} must be written in the {language} "
+                        "script (not transliterated into Latin letters)."
+                    )
+    for language in languages:
+        if language not in seen:
+            issues.append(f"localization is missing an entry for {language}.")
+
+    missing = raw.get("missing_information")
+    if missing is not None and not isinstance(missing, list):
+        issues.append("missing_information must be a list of strings.")
+    return issues
 
 
 # ── mock plan generation (deterministic, token-safe) ──────────────────
@@ -226,7 +420,14 @@ def _mock_plan(
     conditions_v = ". {{CONDITIONS}}" if has.get("CONDITIONS") else ""
     conditions_a = " Note: {{CONDITIONS}}." if has.get("CONDITIONS") else ""
 
-    offer = "{{DISCOUNT}} off {{PRODUCT}}" if has.get("DISCOUNT") else "Special offer on {{PRODUCT}}"
+    # A flat discount's token already reads "<amount> off"; a percentage's
+    # reads "<n>%". Pick the joining word so neither renders as "off off".
+    if not has.get("DISCOUNT"):
+        offer = "Special offer on {{PRODUCT}}"
+    elif tokens["DISCOUNT"].rstrip().lower().endswith("off"):
+        offer = "{{DISCOUNT}} on {{PRODUCT}}"
+    else:
+        offer = "{{DISCOUNT}} off {{PRODUCT}}"
 
     instagram = (
         "{{PRODUCT}} is calling!\n"
@@ -303,7 +504,15 @@ def _mock_plan(
             "voice_script": voice_script,
         },
         "poster_briefs": [{"art_prompt": art_prompt, "overlay_layout": "bottom-anchored fact strip"}],
+        "video_brief": {
+            "concept": "A warm look inside the shop (deterministic mock brief).",
+            "prompt": (
+                "Slow push-in on a cheerful small-shop counter, warm festive lighting, "
+                "a happy customer being served. No text, no letters, no numbers, no logos."
+            ),
+        },
         "localization": localization,
+        "missing_information": [],
     }
 
 
@@ -327,11 +536,143 @@ def get_locked_sheet(db: Session, campaign_id: int) -> FactSheetRecord:
     return sheet
 
 
-def generate_plan(db: Session, campaign: Campaign, settings: Settings | None = None) -> tuple[CampaignPlan, dict[str, Any]]:
+#: Optional facts whose absence the Director reports rather than papers over.
+_GAP_LABELS = {
+    "offer.audience": "Who the offer is for (audience).",
+    "offer.days": "Which days the offer runs.",
+    "offer.start_time": "The opening time of the offer window.",
+    "offer.end_time": "The closing time of the offer window.",
+    "offer.location": "Where customers can get the offer (location).",
+    "offer.conditions": "Any conditions that apply.",
+    "business.name": "The business name.",
+    "business.location": "The business location.",
+}
+
+
+def known_gaps(sheet: FactSheetRecord) -> list[str]:
+    """Facts the owner did not provide, straight from the validated sheet."""
+    try:
+        facts = FactSheet.model_validate(json.loads(sheet.draft_json or "{}"))
+    except Exception:  # noqa: BLE001 - a malformed draft simply reports no gaps
+        return []
+    return [_GAP_LABELS[path] for path in facts.missing if path in _GAP_LABELS]
+
+
+def clean_brief(brief: dict[str, Any] | None) -> dict[str, Any]:
+    """Normalize the owner's planning brief (objective, tone, instructions)."""
+    brief = brief or {}
+    objective = str(brief.get("objective") or DEFAULT_OBJECTIVE).strip().lower()
+    if objective not in OBJECTIVES:
+        raise ValidationError(
+            f"Unknown campaign objective {objective!r}. Expected one of {', '.join(OBJECTIVES)}.",
+            code="invalid_objective",
+        )
+    out: dict[str, Any] = {"objective": objective}
+    for key, limit in (("tone", 120), ("instructions", 600)):
+        value = " ".join(str(brief.get(key) or "").split())
+        if value:
+            out[key] = value[:limit]
+    return out
+
+
+_HEADLINE_ISSUE = "copy_templates.poster_headline must reference at least one {{TOKEN}}."
+
+
+def offer_headline_template(tokens: dict[str, str]) -> str:
+    """The plain offer line, built from token NAMES only (never a value)."""
+    if "DISCOUNT" not in tokens:
+        return "{{PRODUCT}} — {{PRICE}}" if "PRICE" in tokens else "{{PRODUCT}}"
+    joiner = "on" if tokens["DISCOUNT"].rstrip().lower().endswith("off") else "off"
+    return f"{{{{DISCOUNT}}}} {joiner} {{{{PRODUCT}}}}"
+
+
+def _repair_headlines(raw: Any, tokens: dict[str, str]) -> None:
+    """Replace a token-less poster headline with the plain offer line.
+
+    A poster must state the offer. When the model writes a slogan instead,
+    the headline becomes the deterministic token template — no fact value is
+    written here. (The slogan is dropped: poster lines must trace to facts.)
+    """
+    if not isinstance(raw, dict) or "PRODUCT" not in tokens:
+        return
+    groups = [raw.get("copy_templates")]
+    groups += [
+        item.get("copy_templates")
+        for item in (raw.get("localization") or [])
+        if isinstance(item, dict)
+    ]
+    for templates in groups:
+        if not isinstance(templates, dict):
+            continue
+        headline = templates.get("poster_headline")
+        if isinstance(headline, str) and headline.strip() and "{{" not in headline:
+            templates["poster_headline"] = offer_headline_template(tokens)
+
+
+def _direct_live_plan(
+    settings: Settings,
+    sheet: FactSheetRecord,
+    tokens: dict[str, str],
+    languages: list[str],
+    brief: dict[str, Any],
+    gaps: list[str],
+) -> tuple[dict[str, Any], LLMResult]:
+    """Ask Agnes for a plan; validate; repair with bounded attempts."""
+    system, user = build_plan_prompt(
+        canonical_payload_from_sheet(sheet),
+        tokens,
+        languages,
+        max_copy=settings.max_copy_variants,
+        brief=brief,
+        known_gaps=gaps,
+    )
+    client = get_llm_client(settings)  # raises a visible configuration error
+    issues: list[str] = []
+    for attempt in range(PLAN_MAX_ATTEMPTS):
+        prompt = user
+        if attempt:
+            prompt = json.dumps(
+                {
+                    "previous_plan_rejected_because": issues[:12],
+                    "instruction": "Return a corrected, complete plan as ONE JSON object.",
+                    "request": json.loads(user),
+                },
+                ensure_ascii=False,
+            )
+        try:
+            result: LLMResult = run_sync(client.complete_json(system, prompt, max_tokens=4000))
+            parsed = parse_llm_json(result)
+        except ProviderUnavailableError as exc:
+            if exc.code in ("llm_bad_output", "llm_bad_json"):
+                issues = [exc.message]
+                continue
+            raise  # auth, quota, rate limit, network: a new prompt cannot help
+        _repair_headlines(parsed, tokens)
+        issues = validate_plan_raw(parsed, tokens, languages)
+        if not issues:
+            return parsed, result
+    raise ProviderUnavailableError(
+        "Agnes could not produce a valid campaign plan after "
+        f"{PLAN_MAX_ATTEMPTS} attempts. Nothing was saved — try again.",
+        code="plan_invalid",
+        details={"issues": issues[:12]},
+    )
+
+
+def generate_plan(
+    db: Session,
+    campaign: Campaign,
+    settings: Settings | None = None,
+    *,
+    brief: dict[str, Any] | None = None,
+    regenerate: bool = False,
+) -> tuple[CampaignPlan, dict[str, Any]]:
     """Generate + persist a CampaignPlan for a locked campaign.
 
     Returns ``(plan, substituted_copy)``. The plan never contains literal fact
     values — only tokens; substitution happens deterministically at render time.
+    An existing plan for the same locked facts is returned as-is (idempotent)
+    unless ``regenerate`` is set, which stores a new plan version.
     """
     settings = settings or get_settings()
     sheet = get_locked_sheet(db, campaign.id)
@@ -345,9 +686,12 @@ def generate_plan(db: Session, campaign: Campaign, settings: Settings | None = N
         .order_by(CampaignPlanRecord.version.desc())
         .first()
     )
-    if    existing is not None:
+    if existing is not None and not regenerate:
         plan = _plan_from_record(existing, tokens)
         return plan, substitute_copy(plan.copy, tokens, plan.localization)
+
+    brief = clean_brief(brief)
+    gaps = known_gaps(sheet)
 
     if settings.is_mock:
         raw = _mock_plan(campaign.id, sheet, tokens, languages, business_name=_business_name(sheet))
@@ -355,22 +699,17 @@ def generate_plan(db: Session, campaign: Campaign, settings: Settings | None = N
             campaign, sheet, raw, is_mock=True, provider="mock_llm", model="mock-template-engine"
         )
     else:
-        system, user = build_plan_prompt(
-            canonical_payload_from_sheet(sheet), tokens, languages, max_copy=settings.max_copy_variants
+        # Live mode: a failure is surfaced to the caller. It is never replaced
+        # by the mock template (that would present canned copy as Agnes').
+        parsed, result = _direct_live_plan(settings, sheet, tokens, languages, brief, gaps)
+        plan = _plan_from_raw(
+            campaign, sheet, parsed, is_mock=result.is_mock, provider=result.provider, model=result.model
         )
-        try:
-            client = get_llm_client(settings)
-            result: LLMResult = run_sync(client.complete_json(system, user))
-            parsed = parse_plan_json(result.text)
-            plan = _plan_from_raw(
-                campaign, sheet, parsed, is_mock=result.is_mock, provider=result.provider, model=result.model
-            )
-        except ProviderUnavailableError:
-            # Live provider unavailable → deterministic mock plan, explicitly labelled.
-            raw = _mock_plan(campaign.id, sheet, tokens, languages, business_name=_business_name(sheet))
-            plan = _plan_from_raw(
-                campaign, sheet, raw, is_mock=True, provider="mock_llm", model="mock-template-engine"
-            )
+
+    plan.brief = brief
+    plan.missing_information = _merge_unique(gaps, plan.missing_information)
+    # Every stored template must substitute cleanly — in mock mode too.
+    substituted = substitute_copy(plan.copy, tokens, plan.localization)
 
     record = CampaignPlanRecord(
         campaign_id=campaign.id,
@@ -382,16 +721,29 @@ def generate_plan(db: Session, campaign: Campaign, settings: Settings | None = N
     db.add(record)
     db.flush()
     plan.id = record.id
+    plan.version = record.version
     plan.created_at = record.created_at
+    record.plan_json = json.dumps(plan.as_dict(), ensure_ascii=False)
+    if campaign.status == CampaignStatus.LOCKED:
+        campaign.status = CampaignStatus.GENERATING
     audit_plan(db, campaign.id, record.id, plan.is_mock)
-    substituted = substitute_copy(plan.copy, tokens, plan.localization)
     return plan, substituted
+
+
+def _merge_unique(*groups: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for group in groups:
+        for item in group:
+            text = " ".join(str(item).split())[:300]
+            if text and text.lower() not in seen:
+                seen.add(text.lower())
+                out.append(text)
+    return out[:12]
 
 
 def parse_plan_json(text: str) -> dict[str, Any]:
     """Parse a live-model JSON envelope into a raw plan dict."""
-    from .agnes import parse_llm_json
-
     return parse_llm_json(LLMResult(text=text, provider="parse", model="parse", is_mock=False))
 
 
@@ -506,6 +858,10 @@ def _plan_from_dict(
     briefs = [b for b in (data.get("poster_briefs") or []) if isinstance(b, dict) and b.get("art_prompt")]
 
     strategy = data.get("strategy") if isinstance(data.get("strategy"), dict) else {}
+    video_brief = data.get("video_brief") if isinstance(data.get("video_brief"), dict) else {}
+    missing_information = [
+        str(item) for item in (data.get("missing_information") or []) if isinstance(item, str)
+    ]
     plan = CampaignPlan(
         campaign_id=campaign_id,
         fact_sheet_id=fact_sheet_id,
@@ -518,6 +874,9 @@ def _plan_from_dict(
         is_mock=is_mock,
         provider=provider,
         model=model,
+        video_brief={k: str(v) for k, v in video_brief.items() if isinstance(v, str)},
+        missing_information=missing_information,
+        brief=data.get("brief") if isinstance(data.get("brief"), dict) else {},
     )
     if record is not None:
         plan.id = record.id
@@ -539,7 +898,9 @@ __all__ = [
     "TokenizedCopy",
     "LocalizationSpec",
     "CHANNELS",
+    "OBJECTIVES",
     "generate_plan",
+    "validate_plan_raw",
     "get_locked_sheet",
     "get_plan_record",
     "substitute_copy",

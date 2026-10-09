@@ -21,6 +21,7 @@ VALID_STT_PROVIDERS = ("auto", "mock", "sarvam", "faster-whisper", "none")
 VALID_EXTRACTION_PROVIDERS = ("auto", "mock", "agnes", "none")
 VALID_VOICE_PROVIDERS = ("auto", "mock", "sarvam", "none")
 VALID_TASKS_MODES = ("local", "cloud_tasks")
+VALID_VIDEO_PROVIDERS = ("auto", "agnes", "magichour")
 APP_VERSION = "0.3.0"
 
 
@@ -45,6 +46,28 @@ def _env(name: str, default: str | None = None) -> str | None:
         return default
     value = value.strip()
     return value if value != "" else default
+
+
+_PLACEHOLDER_PREFIXES = ("your_", "paste_", "replace_", "changeme", "<")
+
+
+def _env_secret(name: str) -> str | None:
+    """A provider key, with `.env.example` placeholders treated as unset.
+
+    Copying the template without filling it in must read as "not configured"
+    (a clear message) rather than be sent to the provider as a bogus key.
+    """
+    value = _env(name)
+    if value and value.lower().startswith(_PLACEHOLDER_PREFIXES):
+        return None
+    return value
+
+
+def _env_secret_list(name: str) -> tuple[str, ...]:
+    """Comma-separated provider keys (blank entries and placeholders dropped)."""
+    raw = _env(name) or ""
+    keys = [item.strip() for item in raw.split(",")]
+    return tuple(k for k in keys if k and not k.lower().startswith(_PLACEHOLDER_PREFIXES))
 
 
 def _env_int(name: str, default: int) -> int:
@@ -99,7 +122,16 @@ class Settings:
     sarvam_stt_model: str
     voice_provider: str
     max_voice_sample_mb: int
+    #: Text model the Brag Director subagent runs on.
+    brag_agent_model: str
     enable_agnes_video: bool
+    #: auto | agnes | magichour. `auto` uses Magic Hour when keys are set.
+    video_provider: str
+    magichour_api_base: str
+    #: One or more keys; the client moves to the next when one is out of credits.
+    magichour_api_keys: tuple[str, ...]
+    magichour_model: str
+    magichour_resolution: str | None
     max_video_jobs: int
     max_posters: int
     max_video_variants: int
@@ -173,6 +205,17 @@ class Settings:
         return bool(self.sarvam_api_key)
 
     @property
+    def magichour_configured(self) -> bool:
+        return bool(self.magichour_api_keys)
+
+    @property
+    def video_engine(self) -> str:
+        """The AI video provider live mode will actually call."""
+        if self.video_provider == "auto":
+            return "magichour" if self.magichour_configured else "agnes"
+        return self.video_provider
+
+    @property
     def agnes_video_enabled(self) -> bool:
         return self.enable_agnes_video and self.agnes_configured
 
@@ -244,17 +287,23 @@ def _build_settings() -> Settings:
         provider_max_retries=_env_int("TITAN_PROVIDER_MAX_RETRIES", 2),
         provider_backoff_base=_env_float("TITAN_PROVIDER_BACKOFF_BASE", 0.5),
         agnes_api_base=_env("TITAN_AGNES_API_BASE"),
-        agnes_api_key=_env("TITAN_AGNES_API_KEY"),
+        agnes_api_key=_env_secret("TITAN_AGNES_API_KEY"),
         agnes_text_model=_env("TITAN_AGNES_TEXT_MODEL", "agnes-3.0-flash") or "agnes-3.0-flash",
         agnes_image_model=_env("TITAN_AGNES_IMAGE_MODEL", "agnes-image-2.5-flash") or "agnes-image-2.5-flash",
         agnes_video_model=_env("TITAN_AGNES_VIDEO_MODEL", "agnes-video-2.5") or "agnes-video-2.5",
         poster_art_fallback_dir=(REPO_ROOT / (_env("TITAN_POSTER_ART_FALLBACK_DIR") or "backend/assets/prebaked_art")).resolve(),
         sarvam_api_base=_env("TITAN_SARVAM_API_BASE", "https://api.sarvam.ai"),
-        sarvam_api_key=_env("TITAN_SARVAM_API_KEY"),
+        sarvam_api_key=_env_secret("TITAN_SARVAM_API_KEY"),
         sarvam_stt_model=_env("TITAN_SARVAM_STT_MODEL", "saaras:v4") or "saaras:v4",
         voice_provider=_resolve_choice("TITAN_VOICE_PROVIDER", "auto", VALID_VOICE_PROVIDERS),
         max_voice_sample_mb=_env_int("TITAN_MAX_VOICE_SAMPLE_MB", 50),
+        brag_agent_model=_env("TITAN_BRAG_AGENT_MODEL", "agnes-3.0-flash") or "agnes-3.0-flash",
         enable_agnes_video=(_env("TITAN_ENABLE_AGNES_VIDEO", "true") or "true").lower() != "false",
+        video_provider=_resolve_choice("TITAN_VIDEO_PROVIDER", "auto", VALID_VIDEO_PROVIDERS),
+        magichour_api_base=_env("TITAN_MAGICHOUR_API_BASE", "https://api.magichour.ai") or "https://api.magichour.ai",
+        magichour_api_keys=_env_secret_list("TITAN_MAGICHOUR_API_KEYS"),
+        magichour_model=_env("TITAN_MAGICHOUR_MODEL", "default") or "default",
+        magichour_resolution=_env("TITAN_MAGICHOUR_RESOLUTION"),
         max_video_jobs=_env_int("TITAN_MAX_VIDEO_JOBS_PER_CAMPAIGN", 2),
         max_posters=_env_int("TITAN_MAX_POSTERS", 3),
         max_video_variants=_env_int("TITAN_MAX_VIDEO_VARIANTS", 2),
@@ -267,7 +316,7 @@ def _build_settings() -> Settings:
         cloud_run_worker_url=_env("TITAN_CLOUD_RUN_WORKER_URL"),
         windsor_mcp_url=_env("TITAN_WINDSOR_MCP_URL", "https://mcp.windsor.ai/") or "https://mcp.windsor.ai/",
         windsor_auth_mode=(_env("TITAN_WINDSOR_AUTH_MODE", "oauth") or "oauth").lower(),
-        windsor_api_key=_env("TITAN_WINDSOR_API_KEY"),
+        windsor_api_key=_env_secret("TITAN_WINDSOR_API_KEY"),
         windsor_cache_seconds=_env_int("TITAN_WINDSOR_CONNECTOR_CACHE_SECONDS", 300),
         enable_demo_sabotage=(_env("TITAN_ENABLE_DEMO_SABOTAGE", "false") or "false").lower() == "true",
         seal_secret=_env("TITAN_SEAL_SECRET"),

@@ -76,7 +76,11 @@ export function AuthProvider({ children }) {
         }
       })
       .finally(() => {
-        if (mounted.current) setChecking(false);
+        // An aborted check (unmount, or React StrictMode's dev double-mount)
+        // has not decided anything: the re-run owns `checking`. Clearing it
+        // here would briefly report "signed out" and bounce a valid session
+        // to /login on every refresh.
+        if (mounted.current && !controller.signal.aborted) setChecking(false);
       });
     return () => controller.abort();
   }, []);

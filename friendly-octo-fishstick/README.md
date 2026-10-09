@@ -27,38 +27,77 @@ FactSheet before its owner approves publication.
 ## Quickstart (Windows PowerShell)
 
 ```powershell
-# Backend (from the repository root: friendly-octo-fishstick/)
+# 1. Configuration (from the repository root: friendly-octo-fishstick/)
+Copy-Item .env.example .env        # then edit .env — it is git-ignored
+python -c "import secrets; print(secrets.token_urlsafe(48))"   # run twice:
+#   one value for TITAN_SEAL_SECRET (fact lock), one for TITAN_AUTH_SECRET.
+
+# 2. Backend
 cd backend
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
-python -c "import secrets; print(secrets.token_urlsafe(48))"   # generate a secret
-# Put the value in ../.env as TITAN_SEAL_SECRET (fact lock) and, separately,
-# as TITAN_AUTH_SECRET (session signing). See .env.example for every knob.
-.\.venv\Scripts\python.exe -m pytest                      # 216 tests
+.\.venv\Scripts\python.exe -m pytest                      # hermetic; never calls a provider
 .\.venv\Scripts\python.exe -m uvicorn app.main:app --reload --port 8000
 
-# Frontend (web) — from the repository root
-cd ..\frontend
+# 3. Frontend (web) — in a second terminal, from the repository root
+cd frontend
 npm install
-npm run dev      # http://localhost:5173
-
-# Frontend (mobile, Expo)
-npm run mobile
+npm run dev      # http://localhost:5173  (proxies /api to :8000)
+npm run build    # production build
 ```
 
-Open http://localhost:5173 and use **Demo Login** to enter the workspace with no
-credentials. The full journey — capture → confirm facts → lock → plan → create →
-verify → approve & export — runs offline against mock providers.
+Open http://localhost:5173 and sign in (**Demo Login** works in mock mode).
 
-`.env.example` documents every knob (providers, budgets, flags). In mock mode
-(default) the system runs fully offline with honestly labelled mocks and
-**never** touches social endpoints.
+- **`/workspace`** — the voice-only thread (push to talk, no typing, no
+  buttons in the flow):
+  1. hold the mic and say the offer — the words appear live as you speak;
+  2. the facts come back with their validation — hold the mic and say "yes",
+     or say what to change ("make it 25 percent"), or "start over";
+  3. on "yes" the package is made by itself: captions, a designed poster,
+     voice-over, a campaign video and an AI video. The slow steps run side by
+     side and the wait shows each stage live.
+
+  Hold **Space** anywhere on the page (or hold/tap the mic) to talk.
+
+  The poster and campaign video are art-directed by the **Brag Director**, a
+  subagent on Agnes 3.0 Flash (`TITAN_BRAG_AGENT_MODEL`) that follows the
+  brag-slim method (hook → reveal → highlights → outro). It chooses colours,
+  type, layout and framing copy only; every fact is drawn from the locked
+  tokens. Frames are rendered in headless Chrome/Edge via Playwright
+  (`pip install -r requirements-optional.txt`) and encoded with FFmpeg. Without
+  Playwright the poster falls back to the plain compositor.
+- **`/studio`** — the full step-by-step studio for the same campaigns:
+  capture → confirm facts (validation + live FactSheet JSON) → plan → create
+  (posters, Sarvam speech, Agnes AI video) → verify → approve & export. The open
+  campaign and step live in the URL, so a refresh returns to the same screen.
+
+### Mock vs live
+
+| `TITAN_MODE` | Behaviour |
+| --- | --- |
+| `mock` (default) | Fully offline and deterministic. Every output is labelled as demo: speech is a test tone, posters use placeholder art, the AI-video job stores an empty container. |
+| `live` | Real calls: **Agnes** for fact extraction, semantic fact validation, the Campaign Director (plan + copy) and images; **Sarvam** for speech-to-text (including the live transcript while you speak) and text-to-speech; **Magic Hour** for AI video when `TITAN_MAGICHOUR_API_KEYS` is set (otherwise Agnes video). Needs `TITAN_AGNES_API_KEY`, `TITAN_SARVAM_API_KEY` and a durable `TITAN_AUTH_SECRET`. Demo Login is off in live mode: create an account with **Sign up**. A missing key or provider failure is shown as an error with a retry — live mode never substitutes a mock. |
+
+`GET /api/modes` reports exactly what is configured. To check real provider
+access (billable calls; reads `../.env`, forces live mode for that process only):
+
+```powershell
+cd backend
+.\.venv\Scripts\python.exe smoke_live.py            # Agnes chat, Sarvam TTS → STT round trip, Agnes image
+.\.venv\Scripts\python.exe smoke_live.py --video    # also one 4-second Agnes video
+```
+
+The local poster-reel feature needs FFmpeg: either `ffmpeg`/`ffprobe` on `PATH`,
+or the bundled binary from `pip install imageio-ffmpeg` (in
+`requirements-optional.txt`). Without one that job fails with a clear reason
+(AI video does not need FFmpeg).
 
 ## Golden path
 
 ```text
-typed/voice input → STT chain → extraction → FactSheet edit → LOCK (hash+seal)
-→ CampaignPlan (token templates) → posters + captions + voice + reel
+typed/voice input → Sarvam STT → Agnes extraction → schema + Agnes semantic validation
+→ FactSheet edit/confirm → LOCK (hash+seal) → Agnes Campaign Director plan (token templates)
+→ posters (Agnes image) + captions + speech (Sarvam TTS) + AI video (Agnes, async job)
 → Guardian verify → (bounded repair) → certificate → owner approval
 → sandbox publish / wa.me / manual export
 ```

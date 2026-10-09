@@ -4,7 +4,17 @@ from __future__ import annotations
 
 import base64
 import io
+import shutil
 import wave
+
+import pytest
+
+#: The local reel composer shells out to FFmpeg; without the binaries these
+#: tests cannot exercise it (the job then fails honestly with ffmpeg_unavailable).
+needs_ffmpeg = pytest.mark.skipif(
+    shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None,
+    reason="ffmpeg/ffprobe are not installed on this machine",
+)
 
 
 def _wav_b64() -> str:
@@ -61,6 +71,7 @@ def test_video_job_requires_poster(client):
     assert response.json()["error"]["code"] == "poster_missing"
 
 
+@needs_ffmpeg
 def test_video_job_full_lifecycle(client):
     campaign_id, _ = _full_setup(client)
     queued = client.post(
@@ -100,6 +111,7 @@ def test_video_budget_cap(client):
     assert len([a for a in assets if a["kind"] == "video"]) <= 2
 
 
+@needs_ffmpeg
 def test_probe_rejects_invalid_media():
     from pathlib import Path
 
@@ -115,3 +127,18 @@ def test_probe_rejects_invalid_media():
             raise AssertionError("expected media_invalid")
         except Exception as exc:
             assert getattr(exc, "code", "") == "media_invalid"
+
+
+def test_reel_job_fails_honestly_without_ffmpeg(client, monkeypatch):
+    """No FFmpeg → a failed job with the reason; never a placeholder video."""
+    from app.services import video_service
+
+    monkeypatch.setattr(video_service, "_resolved_ffmpeg", lambda: None)
+    campaign_id, _ = _full_setup(client)
+    job = client.post(f"/api/campaigns/{campaign_id}/videos/jobs", json={}).json()
+    result = client.post(f"/api/campaigns/videos/jobs/{job['id']}/run").json()
+    assert result["asset_id"] is None
+    assert result["job"]["status"] == "failed"
+    assert "FFmpeg" in result["job"]["error"]
+    assets = client.get(f"/api/campaigns/{campaign_id}/assets").json()
+    assert [a for a in assets if a["kind"] == "video"] == []

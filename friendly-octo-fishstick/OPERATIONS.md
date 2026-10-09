@@ -2,22 +2,28 @@
 
 ## Provider states
 
-`GET /api/modes` returns the live status of every provider slot: `configured`,
-`available`, `verified`, plus circuit-breaker snapshots. Mock providers are
-always labelled (`is_mock: true`); live slots report `verified: false` until
-deliberately flipped via `_INTERFACE_VERIFIED=1` after a documented smoke test
-of the official API.
+`GET /api/modes` returns the status of every provider slot (`configured`,
+`available`, `detail`). Mock providers are always labelled (`is_mock: true`).
 
 ### Enabling a provider for real
 
-1. Set credentials only as environment variables (or your secret manager).
-2. Re-read the provider's official docs (links in `API_ENDPOINTS.md`) and
-   confirm the request/response contract.
-3. Run one recorded smoke call, compare against docs, then set
-   `TITAN_AGNES_INTERFACE_VERIFIED=1` / `TITAN_SARVAM_INTERFACE_VERIFIED=1`.
-4. Record the evidence in `IMPLEMENTATION_PLAN.md`.
+1. Put the key in `.env` (git-ignored) or your secret manager — never in
+   `.env.example`.
+2. Set `TITAN_MODE=live` and restart. Startup logs name any provider that is
+   still unconfigured; `GET /api/modes` shows the same.
+3. Run `backend/smoke_live.py` to confirm account access (billable).
+
+Live mode never substitutes a mock: a missing key, a rejected key, an exhausted
+quota or a provider outage is returned to the UI as an error with its reason.
 
 ## Stuck jobs
+
+- **AI video jobs** (`stage=agnes_video`) hold the provider task id on the job
+  row and are advanced by `GET /api/campaigns/{id}/videos/jobs` (the UI polls
+  it every 5 s while a job is active). A backend restart loses nothing: the
+  next poll resumes. A job not finished after 15 minutes is failed with
+  `video_deadline_exceeded`; a download that died mid-way is retried after
+  5 minutes. `provider_quota_exceeded` means the Agnes account needs credit.
 
 - Video jobs persist `queued → running → completed|failed` in the `jobs` table.
   A crash mid-run leaves a `running` row; restart the run against the same job

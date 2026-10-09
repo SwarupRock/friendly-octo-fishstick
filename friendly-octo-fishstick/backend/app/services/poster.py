@@ -2,10 +2,12 @@
 
 Pipeline:
 
-1. Agnes Image 2.5 Flash background art (URL/base64) when configured and
-   live-verified — prompts always forbid text/typography;
-2. deterministic fallback art (procedural gradient + shapes) labelled as
-   fallback, never presented as model art;
+1. the configured Agnes image model generates the background art from the
+   Campaign Director's poster brief (live mode) — prompts always forbid
+   text/typography, and the returned bytes are decoded before they are used;
+2. deterministic fallback art (procedural gradient + shapes) is used in mock
+   mode, or in live mode only when the caller explicitly allows it; it is
+   always labelled as fallback and never presented as model art;
 3. Pillow compositor draws ONLY approved strings from the Fact Token map;
 4. every drawn string is recorded in a ``rendered_facts`` registry (what the
    compositor INTENDED to render — the authoritative record);
@@ -24,7 +26,7 @@ from typing import Any
 
 from ..config import Settings, get_settings
 from ..errors import ProviderUnavailableError
-from .agnes import AgnesImageClient, ImageResult, _live_llm_allowed
+from .agnes import ImageResult, get_image_client
 from .async_bridge import run_sync
 from .checksums import sha256_hex
 
@@ -74,6 +76,15 @@ class PosterComposition:
     used_fallback_art: bool
     art_provider: str | None
     art_model: str | None
+    art_prompt: str | None = None
+    #: Why model art was not used (only set alongside ``used_fallback_art``).
+    art_error: str | None = None
+    #: The artwork without any text (kept so the campaign video can reuse it).
+    art_bytes: bytes | None = None
+    #: "brag_frames" (designed in the browser renderer) or "pillow".
+    renderer: str = "pillow"
+    storyboard: dict[str, Any] | None = None
+    design_error: str | None = None
 
     def metadata(self) -> dict[str, Any]:
         return {
@@ -84,6 +95,11 @@ class PosterComposition:
             "used_fallback": self.used_fallback_art,
             "art_provider": self.art_provider,
             "art_model": self.art_model,
+            "art_prompt": self.art_prompt,
+            "art_error": self.art_error,
+            "renderer": self.renderer,
+            "storyboard": self.storyboard,
+            "design_error": self.design_error,
         }
 
 
@@ -137,6 +153,47 @@ def _load_model_art(image_result: ImageResult) -> bytes:
             ) from exc
         return response.content
     raise ProviderUnavailableError("Agnes image result had no image payload.")
+
+
+#: Appended to every art prompt; the compositor draws all text itself.
+NO_TEXT_SUFFIX = (
+    " ABSOLUTELY NO TEXT, NO LETTERS, NO NUMBERS, NO TYPOGRAPHY, NO LOGOS, "
+    "NO WATERMARK anywhere in the image."
+)
+DEFAULT_ART_PROMPT = (
+    "Vibrant promotional photograph, cheerful small-shop scene, warm festive "
+    "lighting, shallow depth of field."
+)
+MIN_ART_EDGE = 256
+
+
+def _validated_art(data: bytes) -> bytes:
+    """Reject anything that is not a decodable, reasonably sized image."""
+    from PIL import Image
+
+    try:
+        with Image.open(io.BytesIO(data)) as probe:
+            probe.verify()
+        with Image.open(io.BytesIO(data)) as image:
+            width, height = image.size
+    except Exception as exc:  # noqa: BLE001 - any decode failure is a bad response
+        raise ProviderUnavailableError(
+            "Agnes returned data that is not a valid image.", code="image_bad_response"
+        ) from exc
+    if min(width, height) < MIN_ART_EDGE:
+        raise ProviderUnavailableError(
+            f"Agnes returned an unusably small image ({width}x{height}).",
+            code="image_bad_response",
+        )
+    return data
+
+
+def generate_model_art(prompt: str, settings: Settings) -> tuple[bytes, ImageResult]:
+    """Generate and validate background art with the Agnes image model."""
+    client = get_image_client(settings)
+    # 3:4 is the documented ratio closest to the 1080x1350 poster canvas.
+    result = run_sync(client.generate_art(prompt + NO_TEXT_SUFFIX, size="1K", ratio="3:4"))
+    return _validated_art(_load_model_art(result)), result
 
 
 # ── compositor ────────────────────────────────────────────────────────
@@ -193,11 +250,15 @@ def compose_poster(
     tokens: dict[str, str],
     fact_lines: dict[str, str],
     settings: Settings | None = None,
+    art_prompt: str | None = None,
+    allow_fallback_art: bool = False,
+    storyboard: Any = None,
 ) -> PosterComposition:
     """Compose the poster; ``fact_lines`` values come ONLY from the token map.
 
-    Raises ``ValidationError`` if any requested fact value cannot be derived
-    from the token map (drawn text is never invented here).
+    ``art_prompt`` is the Director's scene brief. In live mode the Agnes image
+    model must succeed unless ``allow_fallback_art`` is set — a failed
+    generation is an error the caller can retry, not a quiet placeholder.
     """
     settings = settings or get_settings()
     art_bytes: bytes | None = None
@@ -206,20 +267,18 @@ def compose_poster(
     is_mock_art = False
     used_fallback = False
 
-    if not settings.is_mock and settings.agnes_configured and _live_llm_allowed(settings):
-        prompt = (
-            "Vibrant promotional photograph, cheerful small-shop scene, warm festive "
-            "lighting, shallow depth of field. ABSOLUTELY NO TEXT, NO LETTERS, "
-            "NO NUMBERS, NO TYPOGRAPHY, NO WATERMARK anywhere in the image."
-        )
-        image_client = AgnesImageClient(settings)
+    art_error: str | None = None
+    prompt = (art_prompt or DEFAULT_ART_PROMPT).strip()
+
+    if not settings.is_mock:
         try:
-            result = run_sync(image_client.generate_art(prompt))
-            art_bytes = _load_model_art(result)
+            art_bytes, result = generate_model_art(prompt, settings)
             art_provider = result.provider
             art_model = result.model
-        except Exception:  # noqa: BLE001 - art failures degrade to fallback art only
-            art_bytes = None
+        except ProviderUnavailableError as exc:
+            if not allow_fallback_art:
+                raise
+            art_error = exc.message
 
     if art_bytes is None:
         art_bytes = _fallback_art()
@@ -228,9 +287,35 @@ def compose_poster(
         art_provider = "pillow_fallback"
         art_model = "gradient-v1"
 
-    rows = _fact_rows(headline, subline, fact_lines)
-    drawn: list[RenderedFact] = []
-    png = _render_png(art_bytes, business_name, rows, drawn)
+    # Designed layout (Brag Director storyboard, drawn in the frame renderer)
+    # when one is supplied; the plain Pillow strip otherwise or on any failure.
+    png: bytes | None = None
+    rendered_facts: list[dict[str, Any]] = []
+    renderer = "pillow"
+    board: dict[str, Any] | None = None
+    design_error: str | None = None
+    if storyboard is not None:
+        try:
+            from . import brag_renderer
+
+            board = storyboard() if callable(storyboard) else storyboard
+            spec = brag_renderer.build_spec(
+                board, tokens, mode="poster", business_name=business_name, headline=headline, art=art_bytes
+            )
+            png, rendered = brag_renderer.render_poster(spec)
+            rendered_facts = [
+                {"key": item["key"], "text": item["text"], "zone": "designed", "token": item.get("token")}
+                for item in rendered
+            ]
+            renderer = "brag_frames"
+        except Exception as exc:  # noqa: BLE001 - a styling failure must not cost the poster
+            png = None
+            design_error = str(getattr(exc, "message", exc))[:300]
+    if png is None:
+        rows = _fact_rows(headline, subline, fact_lines)
+        drawn: list[RenderedFact] = []
+        png = _render_png(art_bytes, business_name, rows, drawn)
+        rendered_facts = [f.as_dict() for f in drawn]
     digest = sha256_hex(png)
 
     registry = {
@@ -239,8 +324,8 @@ def compose_poster(
         "headline": headline,
         "subline": subline,
         "fact_lines": fact_lines,
-        "rendered_facts": [f.as_dict() for f in drawn],
-        "draw_count": len(drawn),
+        "rendered_facts": rendered_facts,
+        "draw_count": len(rendered_facts),
     }
     return PosterComposition(
         png_bytes=png,
@@ -250,6 +335,12 @@ def compose_poster(
         used_fallback_art=used_fallback,
         art_provider=art_provider,
         art_model=art_model,
+        art_prompt=None if used_fallback else prompt,
+        art_error=art_error,
+        art_bytes=None if used_fallback else art_bytes,
+        renderer=renderer,
+        storyboard=board if renderer == "brag_frames" else None,
+        design_error=design_error,
     )
 
 
@@ -316,6 +407,9 @@ def _render_png(art: bytes, business_name: str, rows: list[_Row], drawn: list[Re
         _emit(row.kind, row.text, row.font_size)
         drawn.append(RenderedFact(row.kind.upper(), row.text, "bottom"))
 
+    # The text lives on the transparent overlay; without this composite the
+    # poster is saved as bare art with no facts on it.
+    image = Image.alpha_composite(image.convert("RGBA"), overlay)
     png = io.BytesIO()
     image.convert("RGB").save(png, format="PNG")
     return png.getvalue()

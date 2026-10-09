@@ -1,10 +1,15 @@
 """Speech-to-text provider abstraction (Source of Truth §7).
 
-Provider hierarchy:
+Sarvam Saaras is the only speech-to-text provider:
 
-    primary / selected STT provider
-        -> faster-whisper local fallback
-        -> typed input fallback (handled by the API layer)
+    TITAN_MODE=mock  -> deterministic, labelled mock transcript
+    TITAN_MODE=live  -> Sarvam Saaras (real API call)
+        -> on failure: typed input (handled by the API layer, with the
+           provider's reason shown to the user)
+
+There is no silent switch to another engine. The legacy `faster-whisper`
+provider class remains only for an operator who selects it explicitly; `auto`
+never picks it.
 
 The raw transcript is immutable. Normalization here is deliberately
 non-destructive (Unicode NFC + whitespace collapse) — semantic/fact
@@ -227,12 +232,15 @@ class SarvamSaarasSTTProvider(STTProvider):
         )
         if not result.transcript:
             raise STTUnavailableError(
-                "Sarvam returned an empty transcript.", details={"reason": "empty_transcript"}
+                "No speech was recognised in the recording. Try again closer to the "
+                "microphone, or type the brief.",
+                code="empty_transcript",
+                details={"reason": "empty_transcript"},
             )
         return TranscriptResult(
             raw_transcript=result.transcript,
-            provider="sarvam_saaras" if result.request_id and not result.request_id.startswith("mock") else "sarvam_saaras_mock",
-            is_mock=bool(result.request_id and result.request_id.startswith("mock")),
+            provider="sarvam_saaras_mock" if result.is_mock else "sarvam_saaras",
+            is_mock=result.is_mock,
             language=result.language_code or language_hint,
             duration_seconds=None,
             confidence=result.confidence,
@@ -243,8 +251,8 @@ class SarvamSaarasSTTProvider(STTProvider):
 def get_stt_provider(settings: Settings | None = None) -> STTProvider:
     """Resolve the active STT provider from settings.
 
-    Hierarchy (auto): mock → (live) Sarvam Saaras → faster-whisper.
-    Typed input remains the API-layer universal fallback.
+    `auto`: mock mode → mock; live mode → Sarvam Saaras. Typed input remains
+    the API-layer fallback when the provider fails.
     """
     settings = settings or get_settings()
     choice = settings.stt_provider
@@ -262,14 +270,11 @@ def get_stt_provider(settings: Settings | None = None) -> STTProvider:
         return FasterWhisperSTTProvider(
             settings.whisper_model, settings.whisper_compute_type
         )
-    # auto: mock mode → mock; live mode → Sarvam if configured, else whisper.
-    # The live-interface gate is enforced inside sarvam.get_stt_sarvam(), which
-    # degrades to the labelled mock provider while the interface is unverified.
+    # auto: mock mode → mock; live mode → Sarvam (which reports a missing key
+    # as a configuration error instead of switching engines).
     if settings.is_mock:
         return MockSTTProvider()
-    if settings.sarvam_configured:
-        return SarvamSaarasSTTProvider()
-    return FasterWhisperSTTProvider(settings.whisper_model, settings.whisper_compute_type)
+    return SarvamSaarasSTTProvider()
 
 
 def stt_status(settings: Settings | None = None) -> ProviderStatus:
@@ -301,21 +306,30 @@ def stt_status(settings: Settings | None = None) -> ProviderStatus:
             capabilities=["mock_transcript"],
         )
 
-    if choice == "sarvam" or (choice == "auto" and settings.sarvam_configured):
-        from .sarvam import sarvam_live_allowed
-
-        verified = sarvam_live_allowed(settings)
+    if choice in ("sarvam", "auto"):
+        if settings.is_mock:
+            return ProviderStatus(
+                name="stt",
+                kind="stt",
+                mode=mode,
+                configured=True,
+                available=True,
+                verified=True,
+                detail="Sarvam selected, but TITAN_MODE=mock: labelled mock transcripts are returned.",
+                capabilities=["mock_transcript"],
+            )
+        configured = settings.sarvam_configured
         return ProviderStatus(
             name="stt",
             kind="stt",
             mode=mode,
-            configured=settings.sarvam_configured,
-            available=settings.sarvam_configured and verified,
-            verified=verified,
+            configured=configured,
+            available=configured,
+            verified=configured,
             detail=(
-                "Sarvam Saaras v4 STT active."
-                if (settings.sarvam_configured and verified)
-                else "Sarvam Saaras v4 configured but unverified; fallback mock active."
+                f"Sarvam {settings.sarvam_stt_model} speech-to-text active."
+                if configured
+                else "Sarvam speech-to-text is not configured: set TITAN_SARVAM_API_KEY."
             ),
             capabilities=["sarvam_stt", "typed_fallback"],
         )
@@ -329,7 +343,7 @@ def stt_status(settings: Settings | None = None) -> ProviderStatus:
         available=installed,
         verified=installed,
         detail=(
-            f"faster-whisper '{settings.whisper_model}' "
+            f"faster-whisper '{settings.whisper_model}' (explicitly selected) "
             + ("is installed (lazy-loaded on first use)." if installed else "is NOT installed; typed fallback will be used.")
         ),
         capabilities=["faster_whisper", "typed_fallback"],

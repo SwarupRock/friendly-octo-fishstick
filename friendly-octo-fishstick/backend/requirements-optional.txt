@@ -2,3 +2,8 @@
 # Not required for the application to start or for typed-input operation.
 # Install with: pip install -r requirements-optional.txt
 faster-whisper>=1.0,<2.0
+# Bundled FFmpeg binary for the poster reel when ffmpeg is not on PATH.
+imageio-ffmpeg>=0.5
+# Frame renderer for the designed poster and campaign video (uses the
+# installed Chrome or Edge; no browser download needed).
+playwright>=1.45

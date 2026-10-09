@@ -39,7 +39,27 @@ def tokens_for_campaign(db: Session, campaign_id: int) -> dict[str, str]:
     return json.loads(sheet.tokens_json or "{}")
 
 
-def generate_posters(db: Session, campaign_id: int, *, variants: int = 1) -> list[AssetRecord]:
+def poster_art_prompt(plan, tokens: dict[str, str], index: int) -> str:
+    """The Director's scene brief, grounded in the locked facts.
+
+    Only descriptive facts (what is sold, to whom, where) reach the image
+    model. Numbers, prices and dates never do — the compositor draws those.
+    """
+    briefs = [b for b in plan.poster_briefs if b.get("art_prompt")]
+    base = str(briefs[index % len(briefs)]["art_prompt"]).strip() if briefs else ""
+    parts = [base] if base else []
+    if tokens.get("PRODUCT"):
+        parts.append(f"Featured: {tokens['PRODUCT']}.")
+    if tokens.get("AUDIENCE"):
+        parts.append(f"Customers shown: {tokens['AUDIENCE']}.")
+    if tokens.get("LOCATION"):
+        parts.append(f"Setting: {tokens['LOCATION']}, India.")
+    return " ".join(parts)
+
+
+def generate_posters(
+    db: Session, campaign_id: int, *, variants: int = 1, allow_fallback_art: bool = False
+) -> list[AssetRecord]:
     """Generate poster assets bound to the latest plan + locked tokens."""
     settings = get_settings()
     campaign = db.get(Campaign, campaign_id)
@@ -70,6 +90,29 @@ def generate_posters(db: Session, campaign_id: int, *, variants: int = 1) -> lis
     if headline_t is None:
         raise ValidationError("Plan has no poster_headline template.", code="plan_incomplete")
 
+    # Live mode: the Brag Director art-directs the poster. Its storyboard is
+    # fetched on a worker thread so it overlaps the (slower) image generation.
+    storyboard = None
+    pool = None
+    if not settings.is_mock:
+        from concurrent.futures import ThreadPoolExecutor
+
+        from . import brag_renderer
+        from .brag_service import get_or_create_storyboard
+
+        if brag_renderer.renderer_available():
+            pool = ThreadPoolExecutor(max_workers=1)
+            future = pool.submit(
+                get_or_create_storyboard,
+                campaign_id,
+                plan_record.id,
+                tokens,
+                business_name=business_name,
+                plan_angle=str((plan.strategy or {}).get("angle") or "") or None,
+            )
+            storyboard = future.result
+            pool.shutdown(wait=False)
+
     created: list[AssetRecord] = []
     for index in range(min(variants, max(1, settings.max_posters - existing_kind_count))):
         headline = substitute_tokens(headline_t.template, tokens)
@@ -81,11 +124,25 @@ def generate_posters(db: Session, campaign_id: int, *, variants: int = 1) -> lis
             tokens=tokens,
             fact_lines={"DISCOUNT": tokens.get("DISCOUNT", ""), "DAYS": tokens.get("DAYS", ""), "WINDOW": tokens.get("WINDOW", "")},
             settings=settings,
+            art_prompt=poster_art_prompt(plan, tokens, existing_kind_count + index),
+            allow_fallback_art=allow_fallback_art,
+            storyboard=storyboard,
         )
-        relative_path = f"campaigns/{campaign_id}/posters/poster_{plan_record.id}_{index + 1}.png"
+        # Numbered after the posters that already exist, so a second batch
+        # never overwrites the file an earlier asset row points at.
+        relative_path = (
+            f"campaigns/{campaign_id}/posters/"
+            f"poster_{plan_record.id}_{existing_kind_count + index + 1}.png"
+        )
         from ..storage import get_storage
 
         get_storage().save_bytes(composition.png_bytes, relative_path)
+        provenance = composition.metadata()
+        if composition.art_bytes:
+            # The artwork without text, for the campaign video to reuse.
+            art_path = relative_path.replace("/poster_", "/art_")
+            get_storage().save_bytes(composition.art_bytes, art_path)
+            provenance["art_path"] = art_path
 
         record = AssetRecord(
             campaign_id=campaign_id,
@@ -101,7 +158,7 @@ def generate_posters(db: Session, campaign_id: int, *, variants: int = 1) -> lis
             model=composition.art_model,
             is_mock=composition.is_mock_art,
             used_fallback=composition.used_fallback_art,
-            provenance_json=json.dumps(composition.metadata(), ensure_ascii=False),
+            provenance_json=json.dumps(provenance, ensure_ascii=False),
         )
         db.add(record)
         db.flush()

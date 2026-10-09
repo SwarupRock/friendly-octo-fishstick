@@ -80,16 +80,16 @@ Documented in `.env.example`. Names only — never commit values.
 
 | Variable | Purpose |
 | --- | --- |
-| `TITAN_STT_PROVIDER` | `auto` \| `mock` \| `sarvam` \| `faster-whisper` \| `none` |
-| `TITAN_SARVAM_API_KEY`, `TITAN_SARVAM_API_BASE`, `TITAN_SARVAM_STT_MODEL` | Sarvam speech-to-text and voice cloning |
+| `TITAN_STT_PROVIDER` | `sarvam` \| `auto` \| `mock` \| `none`. Sarvam is the only speech provider; in live mode `auto` = `sarvam`. |
+| `TITAN_SARVAM_API_KEY`, `TITAN_SARVAM_API_BASE`, `TITAN_SARVAM_STT_MODEL` | Sarvam speech-to-text, text-to-speech (`bulbul:v3`) and voice cloning |
 | `TITAN_EXTRACTION_PROVIDER` | `auto` \| `mock` \| `agnes` \| `none` |
-| `TITAN_AGNES_API_BASE`, `TITAN_AGNES_API_KEY`, `TITAN_AGNES_*_MODEL` | Agnes text/image/video |
+| `TITAN_AGNES_API_BASE`, `TITAN_AGNES_API_KEY`, `TITAN_AGNES_*_MODEL` | Agnes text (extraction, validation, Campaign Director), image and video |
 | `TITAN_VOICE_PROVIDER` | `auto` \| `mock` \| `sarvam` \| `none` |
 | `TITAN_WINDSOR_MCP_URL`, `TITAN_WINDSOR_AUTH_MODE`, `TITAN_WINDSOR_API_KEY` | publishing via Windsor MCP |
 
-A placeholder value is treated as *unconfigured* (the clients gate on a
-non-empty key plus, where relevant, an explicit `_INTERFACE_VERIFIED` flag), so
-pasting a fake key never turns on live mode by accident.
+A template placeholder (`YOUR_…`, `PASTE_…`, `REPLACE_…`) is treated as
+*unconfigured*. Provider keys only take effect in `TITAN_MODE=live`; there is
+no separate verification flag.
 
 ### Budgets and flags
 
@@ -101,10 +101,13 @@ pasting a fake key never turns on live mode by accident.
 ## Switching to live providers
 
 1. Set `TITAN_MODE=live` and a durable `TITAN_AUTH_SECRET`.
-2. Fill the provider keys you intend to use; re-check the provider docs first.
-3. Restart the backend. `GET /api/modes` reports exactly which providers are
-   configured and which fall back.
-4. Publishing stays sandbox-only until Windsor is configured **and** you approve
+2. Set `TITAN_AGNES_API_KEY` and `TITAN_SARVAM_API_KEY` in `.env`.
+3. Restart the backend. Startup logs and `GET /api/modes` report exactly which
+   providers are configured. Nothing falls back to a mock in live mode — an
+   unconfigured or failing provider returns an error with its reason.
+4. Run `backend/smoke_live.py` (add `--video` for the video model) to confirm
+   account access and quota. These are real, billable calls.
+5. Publishing stays sandbox-only until Windsor is configured **and** you approve
    each publication explicitly.
 
 ## Troubleshooting

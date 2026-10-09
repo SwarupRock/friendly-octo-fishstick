@@ -22,7 +22,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from ..config import get_settings
-from ..errors import ConflictError, NotFoundError, ValidationError
+from ..errors import ConflictError, NotFoundError, ProviderUnavailableError, ValidationError
 from ..models import AssetRecord, AuditEvent, Campaign, FactSheetRecord, VoiceProfileRecord
 from ..services import sarvam
 from ..services.async_bridge import run_sync
@@ -90,11 +90,14 @@ def create_voice_profile(
     is_mock = provider_client.name.startswith("mock")
     if reference_audio:
         language = consent_record.get("language", "en-IN") if consent_record else "en-IN"
-        result = run_sync(
-            provider_client.create_voice(
-                reference_audio, name=display_name.strip(), language=language, mime=reference_mime
+        try:
+            result = run_sync(
+                provider_client.create_voice(
+                    reference_audio, name=display_name.strip(), language=language, mime=reference_mime
+                )
             )
-        )
+        except sarvam.ProviderError as exc:
+            raise ProviderUnavailableError(exc.message, code=exc.code) from exc
         provider_voice_id = result.voice_id
         provider_request_id = result.request_id
 
@@ -314,5 +317,197 @@ def generate_localized_voice(
         campaign_id,
         "asset.voice_generated",
         {"asset_id": record.id, "language": language, "is_mock": record.is_mock},
+    )
+    return record
+
+
+# ── Sarvam text-to-speech ─────────────────────────────────────────────
+#: Plan channels whose copy can be spoken.
+TTS_CHANNELS = ("voice_script", "whatsapp", "instagram", "facebook", "reel_script")
+
+
+def tts_options() -> dict[str, Any]:
+    """What the UI may offer — documented provider values only."""
+    return {
+        "provider": "sarvam",
+        "model": sarvam.TTS_MODEL,
+        "languages": list(SUPPORTED_LANGUAGES),
+        "speakers": list(sarvam.TTS_SPEAKERS),
+        "default_speaker": sarvam.TTS_DEFAULT_SPEAKER,
+        "channels": list(TTS_CHANNELS),
+        "max_chars": sarvam.MAX_TTS_TEXT_CHARS,
+    }
+
+
+def _concat_wav(parts: list[bytes]) -> bytes:
+    """Join WAV payloads frame-wise (a byte join would embed extra headers)."""
+    if len(parts) == 1:
+        return parts[0]
+    import io
+    import wave
+
+    out = io.BytesIO()
+    params = None
+    try:
+        with wave.open(out, "wb") as writer:
+            for part in parts:
+                with wave.open(io.BytesIO(part), "rb") as reader:
+                    current = reader.getparams()
+                    if params is None:
+                        params = current
+                        writer.setparams(current)
+                    elif current[:3] != params[:3]:
+                        raise ValidationError(
+                            "Synthesized audio chunks use different formats.",
+                            code="audio_invalid",
+                        )
+                    writer.writeframes(reader.readframes(reader.getnframes()))
+    except (wave.Error, EOFError) as exc:
+        raise ValidationError(
+            "Synthesized audio is not a valid WAV payload.", code="audio_invalid"
+        ) from exc
+    return out.getvalue()
+
+
+def generate_tts_voice(
+    db: Session,
+    *,
+    campaign_id: int,
+    language: str,
+    speaker: str | None = None,
+    channel: str = "voice_script",
+) -> AssetRecord:
+    """Speak one piece of the plan's copy with Sarvam TTS.
+
+    The text is the token-substituted plan copy for ``channel`` — so everything
+    spoken is grounded in the locked facts. A provider failure raises; no
+    placeholder audio is ever stored in live mode.
+    """
+    settings = get_settings()
+    campaign = db.get(Campaign, campaign_id)
+    if campaign is None:
+        raise NotFoundError(f"Campaign {campaign_id} was not found.")
+
+    language_code = SUPPORTED_LANGUAGES.get(language)
+    if language_code is None or language_code not in sarvam.TTS_LANGUAGE_CODES:
+        raise ValidationError(
+            f"Language {language!r} is not in the supported set "
+            f"({', '.join(SUPPORTED_LANGUAGES)}).",
+            code="language_unsupported",
+        )
+    speaker = (speaker or sarvam.TTS_DEFAULT_SPEAKER).strip().lower()
+    if speaker not in sarvam.TTS_SPEAKERS:
+        raise ValidationError(
+            f"Speaker {speaker!r} is not available for {sarvam.TTS_MODEL}.",
+            code="speaker_unsupported",
+        )
+    if channel not in TTS_CHANNELS:
+        raise ValidationError(
+            f"Channel {channel!r} cannot be spoken. Choose one of {', '.join(TTS_CHANNELS)}.",
+            code="channel_unsupported",
+        )
+
+    from ..services.campaign_brain import _plan_from_record, get_plan_record
+
+    plan_record = get_plan_record(db, campaign_id)
+    if plan_record is None:
+        raise ConflictError("Generate the campaign plan first (POST /plan).", code="plan_missing")
+    sheet = db.get(FactSheetRecord, plan_record.fact_sheet_id)
+    tokens = json.loads(sheet.tokens_json or "{}")
+    plan = _plan_from_record(plan_record, tokens)
+
+    existing = (
+        db.query(AssetRecord)
+        .filter(AssetRecord.campaign_id == campaign_id, AssetRecord.kind == "voice")
+        .count()
+    )
+    if existing >= settings.max_voice_variants:
+        raise ConflictError(
+            f"Voice budget reached ({settings.max_voice_variants}).", code="budget_exceeded"
+        )
+
+    # Prefer the copy localized for this language; fall back to the master.
+    script_template = None
+    localized = False
+    for loc in plan.localization:
+        if loc.language == language and channel in loc.copy_templates:
+            script_template = loc.copy_templates[channel]
+            localized = True
+            break
+    if script_template is None:
+        master = plan.copy.get(channel)
+        script_template = master.template if master else None
+    if script_template is None:
+        raise ValidationError(f"The plan has no {channel} copy.", code="plan_incomplete")
+    script = substitute_tokens(script_template, tokens).strip()
+    if not script:
+        raise ValidationError(f"The plan's {channel} copy is empty.", code="plan_incomplete")
+
+    provider = sarvam.get_tts_client(settings)  # raises when unconfigured/disabled
+    chunks = sarvam.split_for_clone(script, sarvam.MAX_TTS_TEXT_CHARS)
+    results = [
+        run_sync(provider.synthesize(chunk, language_code=language_code, speaker=speaker))
+        for chunk in chunks
+    ]
+    try:
+        audio = _concat_wav([r.audio for r in results])
+        duration = _validate_wav(audio)
+    except ValidationError as exc:
+        # The provider answered 200 with unusable audio: that is a provider
+        # failure, not a client mistake.
+        raise ProviderUnavailableError(
+            "Sarvam returned audio that could not be decoded.", code="tts_bad_audio"
+        ) from exc
+    if duration <= 0:
+        raise ProviderUnavailableError("Sarvam returned silent/empty audio.", code="tts_bad_audio")
+
+    from ..storage import get_storage
+
+    is_mock = any(r.is_mock for r in results)
+    relative_path = (
+        f"campaigns/{campaign_id}/voices/tts_{language_code}_{speaker}_{sha256_hex(audio)[:12]}.wav"
+    )
+    get_storage().save_bytes(audio, relative_path)
+
+    record = AssetRecord(
+        campaign_id=campaign_id,
+        plan_id=plan_record.id,
+        factsheet_id=sheet.id,
+        fact_hash=sheet.fact_hash,
+        kind="voice",
+        locale=language_code,
+        text_content=script,
+        template=script_template,
+        storage_path=relative_path,
+        sha256=sha256_digest(audio),
+        asset_status="validating",
+        provider=results[0].provider,
+        model=results[0].model,
+        provider_request_id=",".join(r.request_id for r in results if r.request_id)[:128] or None,
+        is_mock=is_mock,
+        used_fallback=False,
+        provenance_json=json.dumps(
+            {
+                "engine": "tts",
+                "channel": channel,
+                "language": language,
+                "language_code": language_code,
+                "speaker": speaker,
+                "localized_copy": localized,
+                "chunks": len(chunks),
+                "duration_seconds": round(duration, 2),
+                "script_template_hash": sha256_text(script_template),
+                "labeled": "mock_tts" if is_mock else "tts",
+            },
+            ensure_ascii=False,
+        ),
+    )
+    db.add(record)
+    db.flush()
+    _audit(
+        db,
+        campaign_id,
+        "asset.voice_generated",
+        {"asset_id": record.id, "language": language, "engine": "tts", "is_mock": is_mock},
     )
     return record

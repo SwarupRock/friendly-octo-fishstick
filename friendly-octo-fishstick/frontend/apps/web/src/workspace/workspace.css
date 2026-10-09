@@ -573,3 +573,76 @@
   .ws-btn:hover:not(:disabled),
   .ws-campaign-row:hover { transform: none; }
 }
+
+
+/* ── JSON inspector, validation findings, media players, job progress ── */
+.ws-json {
+  margin: 0;
+  padding: 14px 16px;
+  max-height: 420px;
+  overflow: auto;
+  border-radius: 12px;
+  border: 1px solid var(--line, #e4e3dc);
+  background: var(--surface-2, #f7f6f1);
+  color: inherit;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  line-height: 1.55;
+  white-space: pre;
+  tab-size: 2;
+}
+
+.ws-findings { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.ws-finding {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 10px;
+  align-items: start;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--line, #e4e3dc);
+  font-size: 13px;
+}
+.ws-finding.is-error { border-color: #f3c6bd; background: #fdf3f1; }
+.ws-finding.is-warning { border-color: #f0dcae; background: #fdf9ee; }
+.ws-finding p { margin: 0; }
+.ws-finding small { color: var(--muted, #777971); display: block; margin-top: 2px; }
+.ws-field.is-flagged input, .ws-field.is-flagged textarea { border-color: #d9694f; }
+.ws-field.is-flagged > small.ws-flag { color: #8c2d1c; }
+.ws-field.is-warned input, .ws-field.is-warned textarea { border-color: #e2a33c; }
+.ws-field.is-warned > small.ws-flag { color: #a9761c; }
+
+.ws-player { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.ws-player audio { flex: 1 1 220px; min-width: 0; height: 36px; }
+.ws-player.is-error { color: #8c2d1c; }
+.ws-asset-media.is-video { aspect-ratio: auto; background: #000; }
+.ws-asset-media.is-video video { width: 100%; max-height: 420px; display: block; }
+
+.ws-progress {
+  position: relative;
+  height: 6px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--line, #e4e3dc);
+}
+.ws-progress > i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: currentColor;
+  transition: width 0.4s ease;
+}
+.ws-progress.is-indeterminate > i {
+  width: 35%;
+  animation: ws-progress-slide 1.3s ease-in-out infinite;
+}
+@keyframes ws-progress-slide {
+  from { transform: translateX(-110%); }
+  to { transform: translateX(300%); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ws-progress.is-indeterminate > i { animation: none; width: 100%; opacity: 0.4; }
+}
+.ws-job { display: grid; gap: 6px; padding: 10px 0; border-top: 1px solid var(--line, #e4e3dc); font-size: 12.5px; }
+.ws-job:first-child { border-top: 0; }
+.ws-job-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }

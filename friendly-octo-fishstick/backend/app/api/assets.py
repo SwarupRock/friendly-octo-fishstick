@@ -40,6 +40,9 @@ _ALLOWED_MEDIA_TYPES = {
 
 class GenerateRequest(BaseModel):
     variants: int = Field(default=1, ge=1, le=3)
+    #: Live mode only: compose on labelled fallback art if the image model
+    #: fails. Off by default so a provider failure is reported, not hidden.
+    allow_fallback_art: bool = False
 
 
 @router.post("/{campaign_id}/assets/posters", response_model=list[dict])
@@ -51,7 +54,12 @@ def create_posters(
 ) -> list[dict]:
     owned_campaign(db, campaign_id, user)
     variants = payload.variants if payload else 1
-    records = generate_posters(db, campaign_id, variants=variants)
+    records = generate_posters(
+        db,
+        campaign_id,
+        variants=variants,
+        allow_fallback_art=bool(payload and payload.allow_fallback_art),
+    )
     db.commit()
     return [serialize_asset(r) for r in records]
 

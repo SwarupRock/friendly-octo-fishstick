@@ -1,20 +1,23 @@
-"""Sarvam AI clients: Saaras v4 STT + voice cloning (Phases 5A/5B).
+"""Sarvam AI clients: Saaras STT, Bulbul TTS and voice cloning.
 
-Documented contract (re-check against https://docs.sarvam.ai before live use):
+Contract verified against https://docs.sarvam.ai:
 
-- STT:         POST {base}/speech-to-text  — multipart ``file``, ``model``
-               (``saaras:v4``); auth header ``api-subscription-key``;
-               synchronous endpoint is for quick (<30 s) requests.
-- Voice create POST {base}/voices/create   — multipart ``file``, ``name``,
-               reference ``language``; response ``data.voice_id`` + text.
-- Voice clone  POST {base}/voices/clone    — multipart ``text``,
-               ``language_code`` and exactly one of ``voice_id``/``ref_audio``;
-               text max 1 000 chars; JSON response with base64 ``audio`` and
-               ``request_id``.
+- STT:  POST {base}/speech-to-text — multipart ``file``, ``model``
+        (``saaras:v4``), optional ``language_code`` (``unknown`` auto-detects);
+        auth header ``api-subscription-key``; response ``transcript``,
+        ``language_code``, ``request_id``. The synchronous endpoint is meant
+        for short (< 30 s) clips. Partial/streaming transcription is a separate
+        WebSocket API that this backend does not use, so the UI reports
+        recording → processing → transcript rather than fake partials.
+- TTS:  POST {base}/text-to-speech — JSON ``text`` (≤ 2 500 chars),
+        ``language_code``, ``speaker``, ``model`` (``bulbul:v3``),
+        ``output_audio_codec``; response ``audios`` (base64 WAV, one per input).
+- Voice create/clone: POST {base}/voices/create and /voices/clone (multipart).
 
-Live clients are gated behind configuration AND the deliberate
-``TITAN_SARVAM_INTERFACE_VERIFIED=1`` toggle. Offline mode uses deterministic
-mocks labelled ``is_mock=True`` — never impersonating the provider.
+Sarvam is the only speech provider. In ``TITAN_MODE=live`` these clients are
+used directly and a missing key or a provider failure is surfaced as an error
+— never replaced by a mock or another speech service. Offline mode uses
+deterministic mocks labelled ``is_mock=True``.
 """
 
 from __future__ import annotations
@@ -28,9 +31,10 @@ from typing import Any
 import httpx
 
 from ..config import Settings, get_settings
-from ..errors import ProviderUnavailableError
+from ..errors import ProviderUnavailableError, STTUnavailableError
 from .gateway import ProviderError, with_retry
 
+#: Retained so older .env files keep loading; it no longer gates live calls.
 SARVAM_VERIFY_KEY = "TITAN_SARVAM_INTERFACE_VERIFIED"
 
 SUPPORTED_LANGUAGES: dict[str, str] = {
@@ -44,11 +48,32 @@ LANGUAGE_NAME_BY_CODE = {code: name for name, code in SUPPORTED_LANGUAGES.items(
 
 MAX_CLONE_TEXT_CHARS = 1000  # documented request limit; sentence-split above this
 
+# ── TTS (Bulbul) — documented values only ─────────────────────────────
+TTS_MODEL = "bulbul:v3"
+MAX_TTS_TEXT_CHARS = 2500
+TTS_DEFAULT_SPEAKER = "shubh"
+#: Speakers documented for bulbul:v3 (lower-case, case-sensitive).
+TTS_SPEAKERS: tuple[str, ...] = (
+    "shubh", "aditya", "ritu", "priya", "neha", "rahul", "pooja", "rohan",
+    "simran", "kavya", "amit", "dev", "ishita", "shreya", "ratan", "varun",
+    "manan", "sumit", "roopa", "kabir", "aayan", "ashutosh", "advait", "anand",
+    "tanya", "tarun", "sunny", "mani", "gokul", "vijay", "shruti", "suhani",
+    "mohit", "kavitha", "rehan", "soham", "rupali",
+)
+#: Language codes documented for the TTS endpoint.
+TTS_LANGUAGE_CODES: tuple[str, ...] = (
+    "bn-IN", "en-IN", "gu-IN", "hi-IN", "kn-IN", "ml-IN", "mr-IN", "od-IN",
+    "pa-IN", "ta-IN", "te-IN",
+)
+
+NOT_CONFIGURED_MESSAGE = (
+    "Sarvam is not configured: set TITAN_SARVAM_API_KEY (or run with TITAN_MODE=mock)."
+)
+
 
 def sarvam_live_allowed(settings: Settings) -> bool:
-    import os
-
-    return bool(settings.sarvam_configured and os.environ.get(SARVAM_VERIFY_KEY) == "1")
+    """Live Sarvam calls need live mode and a configured key."""
+    return bool(not settings.is_mock and settings.sarvam_configured)
 
 
 def _headers(settings: Settings) -> dict[str, str]:
@@ -59,6 +84,68 @@ def _base_url(settings: Settings) -> str:
     return (settings.sarvam_api_base or "https://api.sarvam.ai").rstrip("/")
 
 
+def _sarvam_error(response: httpx.Response, provider: str, *, what: str) -> ProviderError | None:
+    """Map a Sarvam HTTP status + error body to a normalized error.
+
+    Sarvam returns ``{"error": {"message", "code", "request_id"}}``. Auth,
+    quota and validation errors are permanent and must not be retried.
+    """
+    status = response.status_code
+    if status < 400:
+        return None
+    message = ""
+    provider_code = ""
+    try:
+        body = response.json()
+    except ValueError:
+        body = None
+    if isinstance(body, dict) and isinstance(body.get("error"), dict):
+        message = str(body["error"].get("message") or "")
+        provider_code = str(body["error"].get("code") or "")
+    suffix = f": {message[:300]}" if message else "."
+
+    if status in (401, 403) or provider_code in ("invalid_api_key_error", "authentication_error"):
+        return ProviderError(
+            f"Sarvam rejected the API key ({status}){suffix}",
+            provider=provider, code="provider_auth_error", retryable=False, status_code=status,
+        )
+    if provider_code == "insufficient_quota_error":
+        return ProviderError(
+            f"The Sarvam account is out of quota{suffix}",
+            provider=provider, code="provider_quota_exceeded", retryable=False, status_code=status,
+        )
+    if status == 429:
+        return ProviderError(
+            "Sarvam rate limit reached. Try again in a minute.",
+            provider=provider, code="provider_rate_limited", retryable=True, status_code=status,
+        )
+    if status >= 500:
+        return ProviderError(
+            f"Sarvam server error ({status}){suffix}",
+            provider=provider, code="provider_server_error", retryable=True, status_code=status,
+        )
+    return ProviderError(
+        f"Sarvam rejected the {what} ({status}){suffix}",
+        provider=provider, code="provider_bad_request", retryable=False, status_code=status,
+    )
+
+
+def _sarvam_json(response: httpx.Response, provider: str) -> dict[str, Any]:
+    try:
+        body = response.json()
+    except ValueError as exc:
+        raise ProviderError(
+            "Sarvam returned a non-JSON response.",
+            provider=provider, code="provider_bad_response", retryable=False,
+        ) from exc
+    if not isinstance(body, dict):
+        raise ProviderError(
+            "Sarvam returned an unexpected response shape.",
+            provider=provider, code="provider_bad_response", retryable=False,
+        )
+    return body
+
+
 #: Our UI speaks in short codes ("en", "hi"); Sarvam wants BCP-47 ("en-IN").
 #: An unrecognised hint is dropped rather than sent, so the provider
 #: auto-detects instead of rejecting the request.
@@ -66,12 +153,27 @@ _SARVAM_LANGUAGE_CODES = {
     "en": "en-IN", "hi": "hi-IN", "kn": "kn-IN", "ta": "ta-IN", "te": "te-IN",
     "ml": "ml-IN", "mr": "mr-IN", "bn": "bn-IN", "gu": "gu-IN", "pa": "pa-IN",
     "od": "od-IN", "or": "od-IN", "ur": "ur-IN", "as": "as-IN", "ne": "ne-IN",
-    "si": "si-LK", "ar": "ar-AE", "de": "de-DE", "fr": "fr-FR", "es": "es-ES",
+}
+#: Codes the speech-to-text endpoint documents.
+_STT_LANGUAGE_CODES = frozenset(
+    {
+        "hi-IN", "bn-IN", "kn-IN", "ml-IN", "mr-IN", "od-IN", "pa-IN", "ta-IN",
+        "te-IN", "en-IN", "gu-IN", "as-IN", "ur-IN", "ne-IN", "kok-IN", "ks-IN",
+        "sd-IN", "sa-IN", "sat-IN", "mni-IN", "brx-IN", "mai-IN", "doi-IN",
+    }
+)
+
+#: Upload filename per container, so the provider can sniff the format.
+_AUDIO_EXTENSIONS = {
+    "audio/webm": "webm", "video/webm": "webm", "audio/ogg": "ogg", "audio/opus": "opus",
+    "audio/mpeg": "mp3", "audio/mp3": "mp3", "audio/mp4": "m4a", "audio/x-m4a": "m4a",
+    "audio/aac": "aac", "audio/wav": "wav", "audio/x-wav": "wav", "audio/wave": "wav",
+    "audio/flac": "flac", "audio/amr": "amr", "audio/aiff": "aiff",
 }
 
 
 def sarvam_language_code(hint: str | None) -> str | None:
-    """Normalize a language hint to a code Sarvam accepts (or None)."""
+    """Normalize a language hint to a code Sarvam STT accepts (or None)."""
     if not hint:
         return None
     value = str(hint).strip()
@@ -79,9 +181,8 @@ def sarvam_language_code(hint: str | None) -> str | None:
         return None
     if "-" in value:
         language, _, region = value.partition("-")
-        if len(language) == 2 and len(region) == 2:
-            return f"{language.lower()}-{region.upper()}"
-        return None
+        code = f"{language.lower()}-{region.upper()}"
+        return code if code in _STT_LANGUAGE_CODES else None
     return _SARVAM_LANGUAGE_CODES.get(value.lower())
 
 
@@ -91,6 +192,7 @@ class STTSarvamResult:
     language_code: str | None
     request_id: str | None
     confidence: float | None = None
+    is_mock: bool = False
 
 
 class STTSarvamClient(abc.ABC):
@@ -100,43 +202,87 @@ class STTSarvamClient(abc.ABC):
 
 
 class SarvamSTT(STTSarvamClient):
-    """Saaras v4 STT client (POST /speech-to-text)."""
+    """Saaras STT client (POST /speech-to-text)."""
 
     name = "sarvam_saaras"
+    TIMEOUT = 60.0
 
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
 
     async def transcribe(self, audio: bytes, *, mime: str | None, language_hint: str | None) -> STTSarvamResult:
         settings = self._settings
+        if not audio:
+            raise STTUnavailableError("The recording is empty.", code="empty_audio")
         url = f"{_base_url(settings)}/speech-to-text"
-        files = {"file": ("audio", audio, mime or "audio/webm")}
-        data = {"model": settings.sarvam_stt_model}
-        language_code = sarvam_language_code(language_hint)
-        if language_code:
-            data["language_code"] = language_code
+        # Browsers report e.g. "audio/webm;codecs=opus"; send the bare container
+        # type and a matching filename.
+        content_type = (mime or "audio/webm").split(";", 1)[0].strip().lower() or "audio/webm"
+        filename = f"audio.{_AUDIO_EXTENSIONS.get(content_type, 'webm')}"
+        data = {
+            "model": settings.sarvam_stt_model,
+            # "unknown" is the documented auto-detect value.
+            "language_code": sarvam_language_code(language_hint) or "unknown",
+        }
 
         async def _call() -> dict[str, Any]:
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                response = await client.post(url, headers=_headers(settings), files=files, data=data)
-            if response.status_code in (401, 403):
-                raise ProviderError("Sarvam rejected the API key.", provider=self.name, retryable=False)
-            if response.status_code == 429:
-                raise ProviderError("Sarvam rate limit reached.", provider=self.name, retryable=True, status_code=429)
-            if response.status_code >= 500:
-                raise ProviderError(f"Sarvam server error ({response.status_code}).", provider=self.name, retryable=True)
-            if response.status_code >= 400:
-                raise ProviderError(f"Sarvam request rejected ({response.status_code}).", provider=self.name, retryable=False)
-            return response.json()
+            try:
+                async with httpx.AsyncClient(timeout=self.TIMEOUT) as client:
+                    response = await client.post(
+                        url,
+                        headers=_headers(settings),
+                        files={"file": (filename, audio, content_type)},
+                        data=data,
+                    )
+            except httpx.TimeoutException as exc:
+                raise ProviderError(
+                    "Sarvam speech-to-text timed out.",
+                    provider=self.name, code="provider_timeout", retryable=True,
+                ) from exc
+            except httpx.HTTPError as exc:
+                raise ProviderError(
+                    f"Sarvam could not be reached ({type(exc).__name__}).",
+                    provider=self.name, code="provider_network_error", retryable=True,
+                ) from exc
+            error = _sarvam_error(response, self.name, what="audio")
+            if error is not None:
+                if error.code == "provider_bad_request":
+                    error.code = "invalid_audio"
+                raise error
+            return _sarvam_json(response, self.name)
 
-        body = await with_retry(
-            _call, provider=self.name, max_retries=2, backoff_base=0.5, timeout=60.0, breaker=None
-        )
+        try:
+            body = await with_retry(
+                _call,
+                provider=self.name,
+                max_retries=settings.provider_max_retries,
+                backoff_base=settings.provider_backoff_base,
+                timeout=self.TIMEOUT + 5.0,
+            )
+        except ProviderError as exc:
+            raise STTUnavailableError(
+                exc.message, code=exc.code, details={"provider": self.name, "retryable": exc.retryable}
+            ) from exc
+        except ProviderUnavailableError as exc:
+            raise STTUnavailableError(
+                "Sarvam speech-to-text did not respond in time.",
+                code="provider_timeout",
+                details={"provider": self.name, "retryable": True},
+            ) from exc
+
+        transcript = body.get("transcript")
+        if not isinstance(transcript, str):
+            raise STTUnavailableError(
+                "Sarvam returned no transcript field.",
+                code="provider_bad_response",
+                details={"provider": self.name},
+            )
+        probability = body.get("language_probability")
         return STTSarvamResult(
-            transcript=str(body.get("transcript") or ""),
-            language_code=body.get("language_code"),
-            request_id=body.get("request_id"),
-            confidence=None,
+            transcript=transcript.strip(),
+            language_code=body.get("language_code") if isinstance(body.get("language_code"), str) else None,
+            request_id=body.get("request_id") if isinstance(body.get("request_id"), str) else None,
+            confidence=float(probability) if isinstance(probability, (int, float)) else None,
         )
 
 
@@ -157,6 +303,121 @@ class MockSarvamSTT(STTSarvamClient):
             language_code=language_hint or "en-IN",
             request_id=f"mock-{digest}",
             confidence=0.99,
+            is_mock=True,
+        )
+
+
+# ── text-to-speech ────────────────────────────────────────────────────
+@dataclass
+class TTSResult:
+    audio: bytes  # one WAV payload
+    request_id: str | None
+    provider: str
+    model: str
+    speaker: str
+    is_mock: bool
+
+
+class TTSClient(abc.ABC):
+    name: str = "tts"
+
+    @abc.abstractmethod
+    async def synthesize(self, text: str, *, language_code: str, speaker: str) -> TTSResult:
+        ...
+
+
+class SarvamTTS(TTSClient):
+    """Bulbul v3 text-to-speech (POST /text-to-speech)."""
+
+    name = "sarvam_bulbul"
+    TIMEOUT = 60.0
+
+    def __init__(self, settings: Settings) -> None:
+        self._settings = settings
+
+    async def synthesize(self, text: str, *, language_code: str, speaker: str) -> TTSResult:
+        settings = self._settings
+        url = f"{_base_url(settings)}/text-to-speech"
+        payload = {
+            "text": text,
+            "language_code": language_code,
+            "speaker": speaker,
+            "model": TTS_MODEL,
+            "output_audio_codec": "wav",
+        }
+
+        async def _call() -> dict[str, Any]:
+            try:
+                async with httpx.AsyncClient(timeout=self.TIMEOUT) as client:
+                    response = await client.post(url, headers=_headers(settings), json=payload)
+            except httpx.TimeoutException as exc:
+                raise ProviderError(
+                    "Sarvam text-to-speech timed out.",
+                    provider=self.name, code="provider_timeout", retryable=True,
+                ) from exc
+            except httpx.HTTPError as exc:
+                raise ProviderError(
+                    f"Sarvam could not be reached ({type(exc).__name__}).",
+                    provider=self.name, code="provider_network_error", retryable=True,
+                ) from exc
+            error = _sarvam_error(response, self.name, what="speech request")
+            if error is not None:
+                raise error
+            return _sarvam_json(response, self.name)
+
+        try:
+            body = await with_retry(
+                _call,
+                provider=self.name,
+                max_retries=settings.provider_max_retries,
+                backoff_base=settings.provider_backoff_base,
+                timeout=self.TIMEOUT + 5.0,
+            )
+        except ProviderError as exc:
+            raise ProviderUnavailableError(
+                exc.message, code=exc.code, details=exc.as_dict()
+            ) from exc
+
+        audios = body.get("audios")
+        if not isinstance(audios, list) or not audios or not isinstance(audios[0], str):
+            raise ProviderUnavailableError(
+                "Sarvam text-to-speech returned no audio.", code="tts_bad_response"
+            )
+        try:
+            audio = base64.b64decode(audios[0], validate=True)
+        except Exception as exc:  # noqa: BLE001
+            raise ProviderUnavailableError(
+                "Sarvam text-to-speech audio was not valid base64.", code="tts_bad_audio"
+            ) from exc
+        if not audio:
+            raise ProviderUnavailableError(
+                "Sarvam text-to-speech audio was empty.", code="tts_bad_audio"
+            )
+        return TTSResult(
+            audio=audio,
+            request_id=body.get("request_id") if isinstance(body.get("request_id"), str) else None,
+            provider=self.name,
+            model=TTS_MODEL,
+            speaker=speaker,
+            is_mock=False,
+        )
+
+
+class MockTTS(TTSClient):
+    """Deterministic offline TTS: a short labelled tone, never real speech."""
+
+    name = "mock_tts"
+
+    async def synthesize(self, text: str, *, language_code: str, speaker: str) -> TTSResult:
+        digest = hashlib.sha256(f"{language_code}|{speaker}|{text}".encode("utf-8")).hexdigest()[:16]
+        duration = min(6.0, 0.4 + len(text) * 0.02)
+        return TTSResult(
+            audio=MockVoiceClone._wav(duration),
+            request_id=f"mock-tts-{digest}",
+            provider=self.name,
+            model="mock-tone",
+            speaker=speaker,
+            is_mock=True,
         )
 
 
@@ -278,8 +539,11 @@ class MockVoiceClone(VoiceCloneClient):
             w.setnchannels(1)
             w.setsampwidth(2)
             w.setframerate(rate)
+            import math
+
             frames = b"".join(
-                struct.pack("<h", int(3000 * 0.2 * (i % rate) / rate)) for i in range(samples)
+                struct.pack("<h", int(6000 * math.sin(2 * math.pi * 440 * i / rate)))
+                for i in range(samples)
             )
             w.writeframes(frames)
         return buffer.getvalue()
@@ -295,16 +559,39 @@ class MockVoiceClone(VoiceCloneClient):
 
 
 def get_stt_sarvam(settings: Settings | None = None) -> STTSarvamClient:
+    """Mock only in mock mode; live mode never degrades to a mock transcript."""
     settings = settings or get_settings()
-    if settings.is_mock or not settings.sarvam_configured or not sarvam_live_allowed(settings):
+    if settings.is_mock:
         return MockSarvamSTT()
+    if not settings.sarvam_configured:
+        raise STTUnavailableError(
+            NOT_CONFIGURED_MESSAGE,
+            code="provider_not_configured",
+            details={"provider": "sarvam_saaras"},
+        )
     return SarvamSTT(settings)
+
+
+def get_tts_client(settings: Settings | None = None) -> TTSClient:
+    settings = settings or get_settings()
+    if settings.voice_provider == "none":
+        raise ProviderUnavailableError(
+            "Speech generation is disabled (TITAN_VOICE_PROVIDER=none).",
+            code="voice_disabled",
+        )
+    if settings.is_mock or settings.voice_provider == "mock":
+        return MockTTS()
+    if not settings.sarvam_configured:
+        raise ProviderUnavailableError(NOT_CONFIGURED_MESSAGE, code="provider_not_configured")
+    return SarvamTTS(settings)
 
 
 def get_voice_clone(settings: Settings | None = None, *, profile_is_mock: bool | None = None) -> VoiceCloneClient:
     settings = settings or get_settings()
-    if settings.is_mock or profile_is_mock or not settings.sarvam_configured or not sarvam_live_allowed(settings):
+    if settings.is_mock or profile_is_mock:
         return MockVoiceClone()
+    if not settings.sarvam_configured:
+        raise ProviderUnavailableError(NOT_CONFIGURED_MESSAGE, code="provider_not_configured")
     return SarvamVoiceClone(settings)
 
 
@@ -351,6 +638,16 @@ __all__ = [
     "MockSarvamSTT",
     "SarvamVoiceClone",
     "MockVoiceClone",
+    "SarvamTTS",
+    "MockTTS",
+    "TTSClient",
+    "TTSResult",
+    "TTS_MODEL",
+    "TTS_SPEAKERS",
+    "TTS_DEFAULT_SPEAKER",
+    "TTS_LANGUAGE_CODES",
+    "MAX_TTS_TEXT_CHARS",
+    "get_tts_client",
     "get_stt_sarvam",
     "get_voice_clone",
     "split_for_clone",

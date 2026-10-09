@@ -24,9 +24,11 @@ from ..services.voice_service import (
     create_voice_profile,
     delete_profile,
     generate_localized_voice,
+    generate_tts_voice,
     get_owned_profile,
     list_profiles,
     serialize_profile,
+    tts_options,
 )
 
 router = APIRouter(tags=["voice"])
@@ -123,6 +125,43 @@ def generate_voice(
         profile_id=payload.profile_id,
         owner_uid=user.owner_uid,
         language=payload.language,
+    )
+    db.commit()
+    return serialize_asset(record)
+
+
+class TTSRequest(BaseModel):
+    language: str = Field(min_length=1, max_length=32)
+    speaker: str | None = Field(default=None, max_length=64)
+    #: Which piece of plan copy to speak (default: the voice script).
+    channel: str = Field(default="voice_script", max_length=32)
+
+
+@router.get("/voice/options", response_model=dict)
+def voice_options(user: User = Depends(current_user)) -> dict:
+    """Languages, speakers and channels the TTS endpoint accepts."""
+    return tts_options()
+
+
+@router.post("/campaigns/{campaign_id}/tts", response_model=dict, status_code=201)
+def generate_tts(
+    campaign_id: int,
+    payload: TTSRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(current_user),
+) -> dict:
+    """Speak plan copy with Sarvam TTS and store it as a voice asset.
+
+    Sync on purpose: FastAPI runs it in the threadpool, so the provider call
+    never blocks the event loop. Errors come back with the provider's reason.
+    """
+    owned_campaign(db, campaign_id, user)
+    record = generate_tts_voice(
+        db,
+        campaign_id=campaign_id,
+        language=payload.language,
+        speaker=payload.speaker,
+        channel=payload.channel,
     )
     db.commit()
     return serialize_asset(record)

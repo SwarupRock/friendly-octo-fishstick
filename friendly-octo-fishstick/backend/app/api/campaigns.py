@@ -43,9 +43,11 @@ from ..schemas import (
     ExtractionStatus,
     STTStatus,
     TranscriptView,
+    TypedTranscriptIn,
 )
 from ..services.extraction import get_extraction_provider
 from ..services.fact_engine import normalize_fact_data
+from ..services.fact_validation import refresh_deterministic, validate_sheet
 from ..services.factsheet_service import (
     latest_sheet,
     list_versions,
@@ -208,9 +210,11 @@ async def _run_extraction(
             message=getattr(exc, "message", str(exc)),
             fallback="manual_entry",
         )
-        record_extraction(
+        sheet = record_extraction(
             db, campaign, extracted=None, extraction=status_view.model_dump(), fallback_facts=fallback
         )
+        refresh_deterministic(sheet)
+        db.commit()
         return status_view
     except Exception as exc:  # noqa: BLE001 - unexpected provider failure
         status_view = ExtractionStatus(
@@ -220,14 +224,15 @@ async def _run_extraction(
             message="Fact extraction failed. Enter the facts manually.",
             fallback="manual_entry",
         )
-        record_extraction(
+        sheet = record_extraction(
             db,
             campaign,
             extracted=None,
             extraction=status_view.model_dump(),
             fallback_facts=fallback,
         )
-        _record_audit(db, campaign, "facts.extraction_error", {"error": str(exc)})
+        refresh_deterministic(sheet)
+        _record_audit(db, campaign, "facts.extraction_error", {"error": type(exc).__name__})
         db.commit()
         return status_view
 
@@ -237,13 +242,27 @@ async def _run_extraction(
         is_mock=result.is_mock,
         message=result.message,
     )
-    record_extraction(
+    sheet = record_extraction(
         db,
         campaign,
         extracted=result.sheet,
         extraction=status_view.model_dump(),
         fallback_facts=fallback,
     )
+    # Extraction proposes; validation checks. Deterministic rules always run,
+    # then Agnes compares the facts with the transcript. A failed semantic
+    # call is stored as "unavailable" and never blocks the owner's review.
+    validation = await validate_sheet(sheet, transcript, settings)
+    _record_audit(
+        db,
+        campaign,
+        "facts.validated",
+        {
+            "status": validation["status"],
+            "semantic": (validation.get("semantic") or {}).get("status"),
+        },
+    )
+    db.commit()
     return status_view
 
 
@@ -341,6 +360,15 @@ async def create_campaign(
     db.commit()
     if campaign.transcript:
         await _run_extraction(db, campaign, settings, business_name=shop.name)
+    else:
+        # STT failed or is disabled: keep the campaign + audio and guarantee a
+        # draft FactSheet the client can fill by hand (Source of Truth §46:
+        # typed input is the universal fallback).
+        _ensure_factsheet_for_manual_entry(
+            db,
+            campaign,
+            message=stt_status_view.message or "Enter the facts manually below.",
+        )
     return _serialize(db, campaign, stt=stt_status_view)
 
 
@@ -380,6 +408,59 @@ def get_campaign(
     return _serialize(db, campaign)
 
 
+@router.post("/{campaign_id}/transcript", response_model=CampaignRead)
+async def set_campaign_transcript(
+    campaign_id: int,
+    payload: TypedTranscriptIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(current_user),
+) -> CampaignRead:
+    """Attach a typed transcript to a campaign whose STT failed.
+
+    This is the recovery path for the STT-unavailable state: the recorded
+    audio is kept, the typed brief becomes the immutable transcript, and fact
+    extraction runs on it immediately.
+    """
+    campaign = owned_campaign(db, campaign_id, user)
+    if campaign.transcript:
+        raise ConflictError(
+            "This campaign already has a transcript.",
+            code="transcript_exists",
+        )
+    sheet = latest_sheet(db, campaign.id)
+    if sheet is not None and sheet.status == FactSheetStatus.LOCKED:
+        raise ConflictError(
+            "Facts are already locked.",
+            code="facts_locked",
+            details={"factsheet_id": sheet.id},
+        )
+    text = payload.text.strip()
+    if not text:
+        raise ValidationError("The transcript text is empty.", code="empty_text")
+
+    settings = get_settings()
+    normalized = normalize_transcript(text)
+    campaign.input_type = InputType.TYPED
+    campaign.transcript = text
+    campaign.normalized_transcript = normalized
+    campaign.transcript_hash = _hash_text(text)
+    campaign.transcript_meta_json = json.dumps(
+        {
+            "provider": "typed",
+            "is_mock": False,
+            "language": payload.language_hint,
+            "duration_seconds": None,
+            "confidence": None,
+            "segments": [],
+        }
+    )
+    _record_audit(db, campaign, "transcript.captured", {"source": "typed_recovery"})
+    db.commit()
+    shop = db.get(Shop, campaign.shop_id)
+    await _run_extraction(db, campaign, settings, business_name=shop.name if shop else None)
+    return _serialize(db, campaign, stt=STTStatus(status="skipped", provider="typed"))
+
+
 @router.post("/{campaign_id}/extract", response_model=CampaignRead)
 async def extract_campaign_facts(
     campaign_id: int,
@@ -414,3 +495,38 @@ def _hash_text(text: str) -> str:
     import hashlib
 
     return f"sha256:{hashlib.sha256(text.encode('utf-8')).hexdigest()}"
+
+
+def _ensure_factsheet_for_manual_entry(
+    db: Session,
+    campaign: Campaign,
+    *,
+    message: str,
+) -> None:
+    """Guarantee a draft FactSheet exists even when extraction was skipped.
+
+    When STT fails there is no transcript, so `_run_extraction` has nothing to
+    work with. The client's facts view needs a (truthfully empty) draft sheet
+    to render the manual-entry form — without one the UI dead-ends on a banner
+    whose only escape ("re-run extraction") cannot succeed either.
+    """
+    sheet = latest_sheet(db, campaign.id)
+    if sheet is not None:
+        return
+    fallback = normalize_fact_data({})
+    status_view = ExtractionStatus(
+        status="unavailable",
+        provider=None,
+        is_mock=False,
+        message=message,
+        fallback="manual_entry",
+    )
+    sheet = record_extraction(
+        db,
+        campaign,
+        extracted=None,
+        extraction=status_view.model_dump(),
+        fallback_facts=fallback,
+    )
+    refresh_deterministic(sheet)
+    db.commit()

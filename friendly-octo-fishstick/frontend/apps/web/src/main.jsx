@@ -12,6 +12,7 @@ import { ThemeProvider } from './ThemeContext.jsx';
 import Login from './Login.jsx';
 import Signup from './Signup.jsx';
 import VoiceWorkspace from './workspace/VoiceWorkspace.jsx';
+import Workspace from './workspace/Workspace.jsx';
 import { RibbonFieldBackground } from './shaders/ribbon-field/RibbonFieldBackground.tsx';
 import './shaders/threeui.css';
 
@@ -63,7 +64,7 @@ function ScrollToTop(){const {pathname}=useLocation();useEffect(()=>{window.scro
 
 function AppContent(){
   const location = useLocation();
-  const isStandalone = ['/login', '/signup', '/workspace', '/dashboard', '/app', '/account'].includes(location.pathname);
+  const isStandalone = ['/login', '/signup', '/workspace', '/studio', '/dashboard', '/app', '/account'].includes(location.pathname);
 
   return (
     <>
@@ -87,6 +88,9 @@ function AppContent(){
           {/* The voice workspace. /dashboard, /app and /account are kept as
               aliases so existing links keep working. */}
           <Route path="/workspace" element={<VoiceWorkspace/>}/>
+          {/* The full step-by-step campaign studio: fact review + JSON,
+              plan, posters, speech, video, verify, publish. */}
+          <Route path="/studio" element={<Workspace/>}/>
           <Route path="/dashboard" element={<VoiceWorkspace/>}/>
           <Route path="/app" element={<VoiceWorkspace/>}/>
           <Route path="/account" element={<VoiceWorkspace/>}/>

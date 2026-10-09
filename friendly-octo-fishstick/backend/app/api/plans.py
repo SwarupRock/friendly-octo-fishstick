@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from ..db import get_db
@@ -52,9 +52,22 @@ class PlanRead(BaseModel):
     copy_templates: dict
     localization: list[dict]
     poster_briefs: list[dict]
+    video_brief: dict = Field(default_factory=dict)
+    missing_information: list[str] = Field(default_factory=list)
+    brief: dict = Field(default_factory=dict)
     is_mock: bool
     provider: str
     model: str | None = None
+
+
+class PlanRequest(BaseModel):
+    """The owner's brief for the Campaign Director (all optional)."""
+
+    objective: str | None = Field(default=None, max_length=40)
+    tone: str | None = Field(default=None, max_length=120)
+    instructions: str | None = Field(default=None, max_length=600)
+    #: Store a new plan version even when one exists for these locked facts.
+    regenerate: bool = False
 
 
 def _plan_payload(plan: CampaignPlan) -> dict:
@@ -66,10 +79,16 @@ def _plan_payload(plan: CampaignPlan) -> dict:
 @router.post("/{campaign_id}/plan", response_model=PlanRead)
 def create_plan(
     campaign_id: int,
+    body: PlanRequest | None = None,
     db: Session = Depends(get_db),
     user: User = Depends(current_user),
 ) -> PlanRead:
-    """Generate (mock-capable) the campaign plan for a locked campaign."""
+    """Ask the Campaign Director for the plan of a locked campaign.
+
+    Idempotent per locked fact version unless `regenerate` is set. In live
+    mode a provider or validation failure is returned as an error and nothing
+    is stored.
+    """
     campaign = owned_campaign(db, campaign_id, user)
     settings = get_settings()
 
@@ -82,7 +101,14 @@ def create_plan(
 
             raise ConflictError(TAMPERED, code="seal_invalid")
 
-    plan, _ = generate_plan(db, campaign, settings)
+    request = body or PlanRequest()
+    plan, _ = generate_plan(
+        db,
+        campaign,
+        settings,
+        brief=request.model_dump(include={"objective", "tone", "instructions"}, exclude_none=True),
+        regenerate=request.regenerate,
+    )
     db.commit()
     return PlanRead(**_plan_payload(plan))
 

@@ -38,6 +38,8 @@ Session payload: `{token, expires_at, account:{owner_uid,email,display_name,is_d
 | GET | `/campaigns` | owner's campaigns (`?limit=`) |
 | GET | `/campaigns/{id}` | facts, factsheet, versions, assets, verification, audit |
 | POST | `/campaigns/{id}/extract` | re-extract (refused once locked) |
+| POST | `/campaigns/{id}/transcript` | typed recovery when speech-to-text failed |
+| POST | `/factsheets/{id}/validate` | deterministic rules + Agnes semantic validation → `factsheet.validation` |
 | GET/PATCH | `/factsheets/{id}` | read / edit. **Editing a locked sheet supersedes it and opens a new draft version** |
 | POST | `/factsheets/{id}/lock` | computes hash + HMAC seal; idempotent |
 | POST/GET | `/campaigns/{id}/plan` | build/read the plan; `409 facts_not_locked` |
@@ -52,8 +54,12 @@ Session payload: `{token, expires_at, account:{owner_uid,email,display_name,is_d
 | --- | --- | --- |
 | GET/POST/DELETE | `/voice-profiles[/{id}]` | consent required to create; owner-isolated |
 | POST | `/campaigns/{id}/voice` | localized cloned-voice asset |
+| GET | `/voice/options` | Sarvam TTS languages, speakers, speakable channels |
+| POST | `/campaigns/{id}/tts` | speak plan copy with Sarvam TTS → voice asset |
+| POST | `/campaigns/{id}/videos/generate` | submit an Agnes AI video task (202); poll `/videos/jobs` |
+| POST | `/campaigns/videos/jobs/{job_id}/cancel` | stop tracking an active job |
 | POST | `/campaigns/{id}/videos/jobs` | queue a reel job (202) |
-| GET | `/campaigns/{id}/videos/jobs` | job states |
+| GET | `/campaigns/{id}/videos/jobs` | job states; polling advances active AI video jobs |
 | POST | `/campaigns/videos/jobs/{job_id}/run` | drive a job to a terminal state |
 
 ## Guardian
