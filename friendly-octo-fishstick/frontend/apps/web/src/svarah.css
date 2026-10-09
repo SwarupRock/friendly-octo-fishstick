@@ -1,12 +1,6 @@
 /* svarah.css */
 
-.svarah-header .svarah-logo {
-  font-family: 'Manrope', sans-serif;
-  font-weight: 800;
-  font-size: 26px;
-  color: #191a17;
-  letter-spacing: -1px;
-}
+/* The brand lockup lives in Wordmark.jsx (shared across every surface). */
 
 .btn-lime {
   background: #d8f878 !important;

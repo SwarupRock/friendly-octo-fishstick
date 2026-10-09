@@ -79,19 +79,39 @@ DM Mono labels, lime accent, GSAP hero, WebGL ribbon-field shader).
 apps/web/src/
   main.jsx           route table + marketing pages
   SvarahHero.jsx     animated hero (GSAP) — ex-FormeHero
-  workspace/         the signed-in campaign journey
-    Workspace.jsx        shell + campaign dashboard + step router
-    CaptureStep.jsx      voice/typed input  (create campaign)
-    FactReviewStep.jsx   review, correct, lock, integrity card
-    PlanStep.jsx         channels + tokenized copy
-    AssetsStep.jsx       posters, voice, reel jobs
-    VerifyStep.jsx       Guardian results, repair, human decision, certificate
-    PublishStep.jsx      prepare/approve/execute + export + wa.me
-    hooks.js, ui.jsx     resource/async hooks and shared primitives
+  voice/
+    VoicePill.jsx        press-and-hold mic: gesture, meter, slide-to-cancel
+    useMicRecorder.js    MediaRecorder lifecycle + live input level
+  workspace/
+    VoiceWorkspace.jsx   the signed-in experience (see below)
   lib/api.js         the single typed API client (auth, timeout, errors)
   AuthContext.jsx    backend-backed session state
   Login.jsx / Signup.jsx
 ```
+
+### The post-login experience
+
+The shopkeeper never sees the pipeline. After signing in they get **a
+microphone and a thread**:
+
+1. Hold the mic and speak; the pill shows a live level meter, a timer and
+   slide-to-cancel. Releasing uploads the clip for transcription.
+2. The transcript appears as their message, followed by a plain-language
+   summary of the extracted offer (business, product, discount, days, time,
+   conditions) with **one** action: *Looks right — make my posts*.
+   "Fix something" opens two fields for corrections.
+3. Confirming runs the full integrity pipeline in the background — seal →
+   plan → captions → poster → Guardian — reported as short progress chips.
+   A human-behaviour failure is surfaced in words, not codes.
+4. The finished poster, caption and a *Download* appear in the thread. When a
+   check could not conclude by itself (for example OCR without Tesseract), the
+   one tap offered is *Looks right to me*, which records an audited human
+   decision — it never silently passes a failure.
+5. Past offers live in the **History** rail.
+
+The internal pipeline screens (fact form, plan table, asset list, publish
+console) remain in `workspace/*Step.jsx` and are **no longer routed**; they are
+kept as a reference implementation and are tree-shaken out of the bundle.
 
 ### Golden path
 

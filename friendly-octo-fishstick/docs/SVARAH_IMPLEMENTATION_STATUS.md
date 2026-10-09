@@ -58,8 +58,8 @@ Status of each milestone is appended below as it completes.
 
 **Automated**
 
-- `pytest` — **216 passed** (includes `test_auth.py` and the new
-  `test_human_verify.py`).
+- `pytest` — **226 passed** (includes `test_auth.py`, `test_human_verify.py`,
+  `test_stt_stream.py` and `test_extraction_live.py`).
 - `npm run build` (web, Vite) — success.
 - `npx tsc --noEmit` (mobile) — exit 0.
 
@@ -82,26 +82,81 @@ verify → approve/publish screen. Console clean apart from the expected
 
 ### Changed / created in this session
 
-- `backend/app/api/guardian_api.py` — added `POST /assets/{id}/human-verify`
-  (explicit, audited owner decision on an inconclusive verdict; refuses a hard
-  `FAIL`; uses the latest aggregate verdict).
-- `backend/tests/test_human_verify.py` — 7 new tests.
-- `frontend/apps/web/src/lib/api.js` — `humanVerifyAsset`.
-- `frontend/apps/web/src/workspace/VerifyStep.jsx` — human-decision UI.
-- `.env.example` — documented `TITAN_AUTH_SECRET`, `TITAN_AUTH_TOKEN_TTL_HOURS`,
-  `TITAN_ALLOW_DEMO_LOGIN`, `TITAN_MAX_REQUEST_BYTES`.
-- Local `.env` (git-ignored) — added a random `TITAN_AUTH_SECRET` and the two
-  auth toggles; **no existing value was changed**.
-- `docs/SVARAH_PRODUCT_ARCHITECTURE.md`, `SVARAH_SETUP_AND_CONFIGURATION.md`,
-  `SVARAH_API_INTEGRATION.md`, `SVARAH_SECURITY_AND_DEPLOYMENT.md` (new).
+- `backend/app/api/guardian_api.py` — `POST /assets/{id}/human-verify`.
+- `backend/app/api/stt_stream.py` — **new**: `WS /api/stt/stream` live
+  transcription preview (auth in the first frame, not the query string).
+- `backend/app/services/extraction.py` — **live Agnes extraction wired**
+  (was a stub); mode/mock labelling corrected.
+- `backend/app/services/sarvam.py` — BCP-47 language mapping; shadowing fix.
+- `backend/app/services/campaign_brain.py` — plan provenance preserved on reload.
+- `backend/app/main.py` — Svarah app title; root `/health` alias.
+- `backend/tests/conftest.py` — the suite is now hermetic (a developer's `.env`
+  can no longer leak live providers into assertions).
+- `frontend/apps/web/src/voice/VoicePill.jsx`, `useMicRecorder.js`,
+  `voice-pill.css` — React Bits press-and-hold mic (tap-to-toggle, hold-to-talk,
+  canvas waveform, slide-to-cancel).
+- `frontend/apps/web/src/workspace/VoiceWorkspace.jsx` + `voice-workspace.css` —
+  the mic-and-thread experience (replaces the internal pipeline screens), live
+  transcript preview, real dark/light theming, raised mic dock.
+- `frontend/apps/web/src/Wordmark.jsx` + `wordmark.css` — one shared lockup.
+- `frontend/apps/web/src/Login.jsx` / `Signup.jsx` — mode-aware demo box, copy.
+- `frontend/apps/web/vite.config.js` — WebSocket proxying for the STT stream.
 
 Earlier uncommitted work (auth surface, ownership, workspace UI, API client,
 Svarah rebrand) was reviewed and validated rather than rewritten.
 
+### Live provider enablement (2026-10-09)
+
+The operator supplied real Agnes and Sarvam keys and set `TITAN_MODE=live`. Doing
+so exposed a real defect: **live Agnes extraction was a stub**. It raised
+`interface_unverified` unconditionally, so every campaign came back with an
+empty FactSheet, fact-locking failed with `incomplete_factsheet`, and the whole
+journey stalled — the app looked broken.
+
+Fixed:
+
+- `services/extraction.py` — `AgnesExtractionProvider.extract()` now calls the
+  real LLM client (gated on mode + key + `TITAN_AGNES_INTERFACE_VERIFIED=1`),
+  sends a schema-constrained prompt that forbids inventing values, trims the
+  response to the fact schema, and passes it through `normalize_fact_data`. A
+  non-JSON or wrongly-typed completion degrades to manual entry
+  (`ProviderUnavailableError`), never to a fabricated fact. In mock mode it uses
+  the deterministic rule-based extractor instead of echoing the mock LLM.
+- `services/extraction.py` — `TITAN_EXTRACTION_PROVIDER=agnes` in mock mode now
+  correctly reports the mock provider as available (was reporting `available=False`).
+- `services/sarvam.py` — language hints are mapped to the BCP-47 codes Sarvam
+  accepts (`en` → `en-IN`); unknown hints are dropped so the provider
+  auto-detects instead of rejecting the request. Also removed a local variable
+  shadowing bug in `create_voice`.
+- `services/campaign_brain.py` — a re-read plan keeps its own
+  `is_mock`/`provider`/`model` provenance instead of defaulting to
+  `provider="unknown"`, so a mock plan can never be presented as live.
+- `main.py` — root-level `GET /health` alias (external monitors probe it; the
+  canonical endpoint stays `/api/health`).
+- `Login.jsx` — the password-less demo box is only rendered when `/api/modes`
+  reports mock mode, so live deployments never advertise a refused action.
+
+Verified live against the operator's keys:
+
+| Check | Result |
+| --- | --- |
+| Agnes extraction | facts returned: `Sunrise Cafe`, `cold coffee`, `20%`, `Sat/Sun`, `16:00–20:00` |
+| Agnes planning | real channel copy (instagram + facebook), `provider=agnes` |
+| Agnes image | poster asset `provider=agnes_image`, `is_mock=0`, `used_fallback=0` |
+| Sarvam STT | real `request_id`, language `en-IN` |
+| Guardian | 10/10 captions `PASS` (poster `NEEDS_REVIEW` — no Tesseract locally) |
+| Certificate | `integrity_seal` present |
+| Export | 200 |
+| Browser | real-account login → workspace loads, no console errors |
+
+Still not live-verified: Sarvam voice cloning, Agnes video, Windsor publishing.
+
 ### Provider mode
 
-`TITAN_MODE=mock`. **No live keys are configured**; every provider reports its
-mock status via `GET /api/modes`. Placeholder keys are treated as unconfigured.
+Mock mode remains the default and is fully offline. Live mode requires
+`TITAN_MODE=live` plus per-provider keys; the interface toggles stay explicit so
+credentials alone never enable a network call.
+
 
 ### Not verified / open items
 

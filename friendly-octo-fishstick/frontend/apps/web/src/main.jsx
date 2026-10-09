@@ -6,15 +6,16 @@ import './styles.css';
 import { SvarahHeader, SvarahHero } from './SvarahHero.jsx';
 import FormulaStream from './FormulaStream.jsx';
 import TextRevealScroll from './TextRevealScroll.jsx';
+import Wordmark from './Wordmark.jsx';
 import { AuthProvider, useAuth } from './AuthContext.jsx';
 import { ThemeProvider } from './ThemeContext.jsx';
 import Login from './Login.jsx';
 import Signup from './Signup.jsx';
-import Workspace from './workspace/Workspace.jsx';
+import VoiceWorkspace from './workspace/VoiceWorkspace.jsx';
 import { RibbonFieldBackground } from './shaders/ribbon-field/RibbonFieldBackground.tsx';
 import './shaders/threeui.css';
 
-function Logo(){return <Link className="logo wf-logo" to="/" aria-label="Svarah home"><span className="logo-mark"><AudioLines size={19} strokeWidth={2.5}/></span><span className="logo-word">Svarah<span>.AI</span></span></Link>}
+function Logo(){return <Wordmark size="md"/>}
 function Header(){const [open,setOpen]=useState(false);const loc=useLocation();useEffect(()=>setOpen(false),[loc.pathname]);return <header className="site-header wf-header"><div className="nav-wrap"><Logo/><nav className={open?'nav-links open':'nav-links'}><NavLink end className="nav-link" to="/">Dictation</NavLink><NavLink className="nav-link" to="/notetaker">Notetaker</NavLink><div className="mobile-nav-cta"><Link className="button button-dark" to="/downloads">Download for free <ArrowRight size={16}/></Link></div></nav><div className="nav-actions"><Link className="button button-dark nav-cta" to="/downloads">Download for free <ArrowRight size={16}/></Link><button className="menu-button" onClick={()=>setOpen(v=>!v)} aria-label={open?'Close menu':'Open menu'}>{open?<X/>:<Menu/>}</button></div></div></header>}
 function Button({children,to='/downloads',href,light=false}){const cls=`button ${light?'button-light':'button-dark'}`;return href?<a className={cls} href={href} target={href?.startsWith('http')?'_blank':undefined} rel="noreferrer">{children}</a>:<Link className={cls} to={to}>{children}</Link>}
 function Pill({children}){return <span className="pill"><span className="pill-dot"/>{children}</span>}
@@ -83,12 +84,12 @@ function AppContent(){
           <Route path="/india" element={<India/>}/>
           <Route path="/login" element={<Login/>}/>
           <Route path="/signup" element={<Signup/>}/>
-          {/* The campaign workspace. /dashboard, /app and /account are kept as
+          {/* The voice workspace. /dashboard, /app and /account are kept as
               aliases so existing links keep working. */}
-          <Route path="/workspace" element={<Workspace/>}/>
-          <Route path="/dashboard" element={<Workspace/>}/>
-          <Route path="/app" element={<Workspace/>}/>
-          <Route path="/account" element={<Workspace/>}/>
+          <Route path="/workspace" element={<VoiceWorkspace/>}/>
+          <Route path="/dashboard" element={<VoiceWorkspace/>}/>
+          <Route path="/app" element={<VoiceWorkspace/>}/>
+          <Route path="/account" element={<VoiceWorkspace/>}/>
           <Route path="*" element={<NotFound/>}/>
         </Routes>
       </main>

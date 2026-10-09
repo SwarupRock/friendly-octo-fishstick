@@ -4,6 +4,7 @@ import { ScrollTrigger } from 'gsap/ScrollTrigger';
 import { ArrowRight, Check, Play, Sparkles, X, Menu, Search, Image as ImageIcon, Video, Calendar, User, UploadCloud, Link as LinkIcon, Smartphone, Settings, Heart, MessageCircle, Send, Bookmark, MoreHorizontal, Share2, Music, Repeat2, BarChart2, Share, ThumbsUp, MessageSquare, Globe2 } from 'lucide-react';
 import './svarah.css';
 import { Link, NavLink, useLocation } from 'react-router-dom';
+import Wordmark from './Wordmark.jsx';
 
 import { useAuth } from './AuthContext';
 
@@ -19,7 +20,7 @@ export function SvarahHeader() {
   return (
     <header className="site-header svarah-header">
       <div className="nav-wrap">
-        <Link className="svarah-logo" to="/">SVARAH.AI</Link>
+        <Wordmark size="lg" />
         <nav className={open ? 'nav-links open' : 'nav-links'}>
           <NavLink className="nav-link" to="/why-flow">Product</NavLink>
           <NavLink className="nav-link" to="/business">Solutions</NavLink>

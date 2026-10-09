@@ -1,0 +1,20 @@
+/* Svarah.AI wordmark — one lockup, used everywhere.
+   Matches the marketing top bar: Manrope 800, tight tracking, uppercase. */
+
+.wm {
+  display: inline-flex;
+  align-items: center;
+  text-decoration: none;
+  color: inherit;
+  white-space: nowrap;
+  font-family: Manrope, sans-serif;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: -1px;
+}
+
+.wm--sm { font-size: 18px; }
+.wm--md { font-size: 22px; }
+.wm--lg { font-size: 26px; }
+
+.wm:hover { opacity: 0.82; }

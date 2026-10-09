@@ -1,9 +1,10 @@
 import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { AudioLines, ArrowRight, Sparkles, Lock, Mail, User, ShieldCheck } from 'lucide-react';
+import { ArrowRight, Lock, Mail, User, ShieldCheck } from 'lucide-react';
 import { useAuth } from './AuthContext';
 import { errorMessage } from './lib/api';
 import ThemeToggle from './ThemeToggle';
+import Wordmark from './Wordmark.jsx';
 import './auth.css';
 
 export default function Signup() {
@@ -48,16 +49,9 @@ export default function Signup() {
       <div className="auth-card-wrap">
         <div className="auth-card">
           <div className="auth-header">
-            <Link to="/" className="auth-logo">
-              <span className="logo-mark"><AudioLines size={20} strokeWidth={2.5}/></span>
-              <span className="logo-word">Svarah<span>.AI</span></span>
-            </Link>
-            <div className="auth-badge">
-              <Sparkles size={13}/>
-              <span>Start Free • No credit card</span>
-            </div>
+            <Wordmark size="lg" className="auth-logo" />
             <h1>Create your Svarah.AI account</h1>
-            <p>Join thousands of writers, developers, and founders speaking 4× faster than typing.</p>
+            <p>Tell Svarah about your offer in your own words and it writes the posts for you.</p>
           </div>
 
           {toast && (

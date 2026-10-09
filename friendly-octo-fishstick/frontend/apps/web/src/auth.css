@@ -50,11 +50,7 @@
 }
 
 .auth-logo {
-  display: inline-flex;
-  align-items: center;
-  gap: 9px;
   margin-bottom: 18px;
-  text-decoration: none;
 }
 
 .auth-logo .logo-mark {

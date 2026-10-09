@@ -301,6 +301,25 @@ def stt_status(settings: Settings | None = None) -> ProviderStatus:
             capabilities=["mock_transcript"],
         )
 
+    if choice == "sarvam" or (choice == "auto" and settings.sarvam_configured):
+        from .sarvam import sarvam_live_allowed
+
+        verified = sarvam_live_allowed(settings)
+        return ProviderStatus(
+            name="stt",
+            kind="stt",
+            mode=mode,
+            configured=settings.sarvam_configured,
+            available=settings.sarvam_configured and verified,
+            verified=verified,
+            detail=(
+                "Sarvam Saaras v4 STT active."
+                if (settings.sarvam_configured and verified)
+                else "Sarvam Saaras v4 configured but unverified; fallback mock active."
+            ),
+            capabilities=["sarvam_stt", "typed_fallback"],
+        )
+
     installed = _faster_whisper_installed()
     return ProviderStatus(
         name="stt",

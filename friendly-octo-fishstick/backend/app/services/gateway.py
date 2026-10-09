@@ -178,9 +178,9 @@ class BaseProvider(abc.ABC):
 
     name: str = "base"
     kind: str = "generic"
-    capabilities: tuple[str, ...] = ()
-    #: True only once the real interface + credentials have been confirmed.
-    interface_verified: bool = False
+    @property
+    def interface_verified(self) -> bool:
+        return False
 
     def is_configured(self, settings: Settings) -> bool:
         return False
@@ -217,11 +217,24 @@ class AgnesProvider(BaseProvider):
     def is_configured(self, settings: Settings) -> bool:
         return bool(settings.agnes_api_base and settings.agnes_api_key)
 
+    @property
+    def interface_verified(self) -> bool:
+        import os
+        return os.environ.get("TITAN_AGNES_INTERFACE_VERIFIED") == "1"
+
 
 class AgnesImageProvider(BaseProvider):
     name = "agnes_image"
     kind = "image"
     capabilities = ("poster_art",)
+
+    def is_configured(self, settings: Settings) -> bool:
+        return bool(settings.agnes_api_base and settings.agnes_api_key)
+
+    @property
+    def interface_verified(self) -> bool:
+        import os
+        return os.environ.get("TITAN_AGNES_INTERFACE_VERIFIED") == "1"
 
 
 class AgnesVideoProvider(BaseProvider):
@@ -229,11 +242,27 @@ class AgnesVideoProvider(BaseProvider):
     kind = "video"
     capabilities = ("short_video",)
 
+    def is_configured(self, settings: Settings) -> bool:
+        return bool(settings.agnes_api_base and settings.agnes_api_key and settings.enable_agnes_video)
+
+    @property
+    def interface_verified(self) -> bool:
+        import os
+        return os.environ.get("TITAN_AGNES_INTERFACE_VERIFIED") == "1"
+
 
 class VoiceProviderSlot(BaseProvider):
     name = "voice"
     kind = "voice"
     capabilities = ("tts", "voice_clone")
+
+    def is_configured(self, settings: Settings) -> bool:
+        return bool(settings.sarvam_api_key)
+
+    @property
+    def interface_verified(self) -> bool:
+        import os
+        return os.environ.get("TITAN_SARVAM_INTERFACE_VERIFIED") == "1"
 
 
 class PublisherProviderSlot(BaseProvider):

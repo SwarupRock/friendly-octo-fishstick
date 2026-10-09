@@ -127,20 +127,40 @@ def test_extraction_disabled_raises(env_override):
         get_extraction_provider(get_settings())
 
 
-def test_agnes_provider_unconfigured_raises(client):
-    settings = get_settings()
-    provider = AgnesExtractionProvider(settings)
-    with pytest.raises(ProviderUnavailableError) as excinfo:
-        asyncio.run(provider.extract(DEMO_TRANSCRIPT))
-    assert excinfo.value.details["provider"] == "agnes_llm"
-
-
-def test_agnes_provider_configured_but_unverified_raises(client, env_override):
-    env_override(TITAN_AGNES_API_BASE="https://example.invalid", TITAN_AGNES_API_KEY="k")
+def test_agnes_provider_live_unconfigured_raises(client, env_override):
+    """A live Agnes slot without a key must refuse, not call out."""
+    env_override(TITAN_MODE="live", TITAN_EXTRACTION_PROVIDER="agnes")
     provider = AgnesExtractionProvider(get_settings())
     with pytest.raises(ProviderUnavailableError) as excinfo:
         asyncio.run(provider.extract(DEMO_TRANSCRIPT))
-    assert excinfo.value.details["reason"] == "interface_unverified"
+    assert excinfo.value.code == "provider_not_configured"
+
+
+def test_agnes_provider_live_configured_but_unverified_raises(client, env_override):
+    """Keys alone are not consent: the interface must be deliberately verified."""
+    env_override(
+        TITAN_MODE="live",
+        TITAN_AGNES_API_BASE="https://example.invalid",
+        TITAN_AGNES_API_KEY="k",
+    )
+    provider = AgnesExtractionProvider(get_settings())
+    with pytest.raises(ProviderUnavailableError) as excinfo:
+        asyncio.run(provider.extract(DEMO_TRANSCRIPT))
+    assert excinfo.value.code == "interface_unverified"
+
+
+def test_agnes_provider_in_mock_mode_degrades_to_labelled_mock(client, env_override):
+    """Offline, an Agnes-selected slot still produces a usable, labelled sheet.
+
+    The mock is rule-based and carries `is_mock=True`, so the offline demo keeps
+    working without ever pretending a live model answered.
+    """
+    env_override(TITAN_MODE="mock", TITAN_EXTRACTION_PROVIDER="agnes")
+    provider = AgnesExtractionProvider(get_settings())
+    result = asyncio.run(provider.extract(DEMO_TRANSCRIPT))
+    assert result.is_mock is True
+    assert result.provider == "mock"
+    assert result.sheet.offer.discount_percent == 20
 
 
 def test_provider_selection_follows_mode(client, env_override):

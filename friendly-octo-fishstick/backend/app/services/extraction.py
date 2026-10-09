@@ -6,21 +6,30 @@ Extraction *proposes*; it never locks. The provider hierarchy is:
         -> (when unavailable / not configured) manual FactSheet entry,
            surfaced to the client as an in-band "unavailable" status.
 
-Agnes is registered in the gateway as an **unverified** slot: Phase 2 does not
-guess its HTTP interface, so a live call raises `ProviderUnavailableError` and
-the API degrades to manual entry rather than fabricating facts. Mock extraction
-is deterministic, rule-based and explicitly labelled (`is_mock=True`).
+A live Agnes call is gated on three things at once: `TITAN_MODE=live`, a
+configured key, and the deliberate `TITAN_AGNES_INTERFACE_VERIFIED=1` toggle.
+When any of those is missing the call raises `ProviderUnavailableError` and the
+API degrades to manual entry rather than fabricating facts. Whatever the model
+returns is passed through `normalize_fact_data`, so a chatty or malformed
+response can never become a locked fact. Mock extraction is deterministic,
+rule-based and explicitly labelled (`is_mock=True`).
 """
 
 from __future__ import annotations
 
 import abc
+import json
 import re
 from dataclasses import dataclass
 from typing import Any
 
 from ..config import Settings, get_settings
-from ..errors import ExtractionUnavailableError, ProviderUnavailableError
+from ..errors import (
+    ExtractionUnavailableError,
+    NormalizationError,
+    ProviderUnavailableError,
+)
+from .agnes import LLMResult, get_llm_client, parse_llm_json
 from .fact_engine import normalize_fact_data
 from .fact_schemas import FactSheet
 from .gateway import ProviderGateway, ProviderStatus, build_gateway
@@ -369,12 +378,108 @@ class MockExtractionProvider(ExtractionProvider):
         )
 
 
-class AgnesExtractionProvider(ExtractionProvider):
-    """Agnes 3.0 Flash extraction slot.
+# ── live extraction prompt ─────────────────────────────────────────────
+_EXTRACTION_SYSTEM = """You extract structured facts from a small-business promotion.
 
-    Routed through the provider gateway. Because the Agnes interface is
-    unverified in this phase, a call raises `ProviderUnavailableError` — the
-    API then offers manual FactSheet entry instead of inventing a result.
+Return ONLY a JSON object. Extract a value only when the speaker actually stated
+it: never invent, guess, round, or embellish. Use null for unknown scalars and
+[] for unknown lists, and do not add fields that were not stated.
+
+{
+  "business": {"name": string|null, "location": string|null},
+  "offer": {
+    "product": string[],
+    "discount_percent": number|null,
+    "discount_flat": number|null,
+    "price": number|null,
+    "quantity": number|null,
+    "audience": string[],
+    "days": string[],
+    "date_start": string|null,
+    "date_end": string|null,
+    "start_time": string|null,
+    "end_time": string|null,
+    "conditions": string[],
+    "location": string|null
+  },
+  "languages": string[]
+}
+
+Rules:
+- product: the exact words used for what is on offer, e.g. ["cold coffee"].
+- discount_percent: the number only, e.g. "20% off" -> 20.
+- discount_flat: a flat amount, e.g. "50 off" -> 50.
+- price: a stated price as a number, with no currency symbol.
+- days: full English weekday names, e.g. ["Saturday","Sunday"]. "this weekend"
+  means ["Saturday","Sunday"].
+- date_start / date_end: YYYY-MM-DD, only when an explicit date is stated.
+- start_time / end_time: 24-hour HH:MM, e.g. "4 to 8 PM" -> "16:00" and "20:00".
+- conditions: stated conditions in the speaker's own words.
+- languages: only languages explicitly asked for, e.g. ["Hindi"].
+"""
+
+#: Offer keys the canonical schema understands; anything else is dropped.
+_OFFER_FIELDS = (
+    "product", "discount_percent", "discount_flat", "price", "quantity",
+    "audience", "days", "date_start", "date_end", "start_time", "end_time",
+    "conditions", "location",
+)
+
+
+def build_extraction_prompt(
+    transcript: str, *, business_name: str | None = None
+) -> tuple[str, str]:
+    envelope: dict[str, Any] = {"transcript": transcript}
+    if business_name:
+        envelope["known_business_name"] = business_name
+    return _EXTRACTION_SYSTEM, json.dumps(envelope, ensure_ascii=False)
+
+
+def _coerce_extraction_payload(
+    parsed: dict[str, Any], *, business_name: str | None
+) -> dict[str, Any]:
+    """Trim a model response to the fact schema before normalization.
+
+    Unknown keys are dropped so a chatty model cannot smuggle extra fields into
+    the canonical sheet; everything left still has to survive
+    `normalize_fact_data`.
+    """
+    if not isinstance(parsed, dict):
+        raise ProviderUnavailableError(
+            "Agnes extraction did not return a JSON object.", code="llm_bad_output"
+        )
+
+    def _section(key: str) -> dict[str, Any]:
+        """A missing/null section is fine; a wrong type is a contract break."""
+        value = parsed.get(key)
+        if value is None:
+            return {}
+        if isinstance(value, dict):
+            return dict(value)
+        raise ProviderUnavailableError(
+            f"Agnes extraction returned '{key}' as {type(value).__name__}, not an object.",
+            code="llm_bad_output",
+        )
+
+    business = _section("business")
+    # The caller may already know the business name; the model must not invent one.
+    if business_name and not clean_text(business.get("name")):
+        business["name"] = business_name
+    offer = _section("offer")
+    languages = parsed.get("languages")
+    return {
+        "business": business,
+        "offer": {k: v for k, v in offer.items() if k in _OFFER_FIELDS},
+        "languages": languages if isinstance(languages, list) else [],
+    }
+
+
+class AgnesExtractionProvider(ExtractionProvider):
+    """Agnes 3.0 Flash extraction (real model call, gateway-gated).
+
+    The model only *proposes* facts. Its JSON is coerced to the schema, then run
+    through `normalize_fact_data`, which rejects anything malformed — so a bad
+    completion degrades to manual entry instead of becoming a locked fact.
     """
 
     name = "agnes"
@@ -392,17 +497,48 @@ class AgnesExtractionProvider(ExtractionProvider):
         business_name: str | None = None,
         locale: str | None = None,
     ) -> ExtractionResult:
-        slot = self._gateway.get("agnes_llm")
-        status = slot.status(self._settings)
-        if not status.configured:
-            raise ProviderUnavailableError(
-                "Agnes is not configured. Enter the facts manually.",
-                details={"provider": "agnes_llm", "reason": "not_configured"},
+        settings = self._settings
+
+        if settings.is_mock:
+            # `TITAN_EXTRACTION_PROVIDER=agnes` while offline stays deterministic
+            # and labelled, rather than echoing the mock LLM's own envelope.
+            sheet = _rules_extract(transcript, business_name=business_name)
+            return ExtractionResult(
+                sheet=sheet,
+                provider="mock",
+                is_mock=True,
+                status="ok",
+                message=(
+                    "Extracted by the deterministic mock provider. "
+                    "Review and correct every field before locking."
+                ),
             )
-        raise ProviderUnavailableError(
-            "Agnes extraction is registered but its interface is unverified; "
-            "live calls are disabled. Enter the facts manually.",
-            details={"provider": "agnes_llm", "reason": "interface_unverified"},
+
+        # Raises ProviderUnavailableError when unconfigured or not yet
+        # interface-verified; the caller then offers manual entry.
+        client = get_llm_client(settings)
+        system, user = build_extraction_prompt(transcript, business_name=business_name)
+        result: LLMResult = await client.complete_json(system, user, max_tokens=1200)
+        parsed = parse_llm_json(result)
+        payload = _coerce_extraction_payload(parsed, business_name=business_name)
+        try:
+            sheet = normalize_fact_data(payload)
+        except NormalizationError as exc:
+            raise ProviderUnavailableError(
+                "Agnes returned facts that failed validation; enter them manually.",
+                code="llm_bad_facts",
+                details={"error": str(exc)},
+            ) from exc
+
+        return ExtractionResult(
+            sheet=sheet,
+            provider=result.provider,
+            is_mock=result.is_mock,
+            status="ok",
+            message=(
+                "Extracted by Agnes 3.0 Flash. Review and correct every field "
+                "before locking."
+            ),
         )
 
 
@@ -442,7 +578,7 @@ def extraction_status(settings: Settings | None = None) -> ProviderStatus:
             detail="Disabled by configuration; manual FactSheet entry is the fallback.",
             capabilities=["manual_entry"],
         )
-    if choice == "mock" or (choice == "auto" and settings.is_mock):
+    if choice == "mock" or settings.is_mock:
         return ProviderStatus(
             name="extraction",
             kind="extraction",
@@ -454,17 +590,24 @@ def extraction_status(settings: Settings | None = None) -> ProviderStatus:
             capabilities=["mock_extraction"],
         )
 
+    import os
+
     configured = bool(settings.agnes_api_base and settings.agnes_api_key)
+    verified = bool(configured and os.environ.get("TITAN_AGNES_INTERFACE_VERIFIED") == "1")
     return ProviderStatus(
         name="extraction",
         kind="extraction",
         mode=mode,
         configured=configured,
-        available=False,
-        verified=False,
+        available=configured and verified,
+        verified=verified,
         detail=(
-            "Agnes 3.0 Flash slot registered but unverified; live extraction is "
-            "disabled pending the real interface and credentials."
+            "Agnes 3.0 Flash extraction active."
+            if (configured and verified)
+            else (
+                "Agnes 3.0 Flash slot registered but unverified; live extraction is "
+                "disabled pending the real interface and credentials."
+            )
         ),
         capabilities=["agnes_extraction", "manual_entry"],
     )

@@ -28,8 +28,24 @@ os.environ["TITAN_SEAL_SECRET"] = "test-seal-secret-do-not-use-in-prod"
 os.environ["TITAN_AUTH_SECRET"] = "test-auth-secret-do-not-use-in-prod"
 os.environ["TITAN_DATABASE_URL"] = f"sqlite:///{(_TMP / 'test.db').as_posix()}"
 os.environ["TITAN_ASSETS_DIR"] = str(_TMP / "assets")
-os.environ.pop("TITAN_AGNES_API_BASE", None)
-os.environ.pop("TITAN_AGNES_API_KEY", None)
+for _provider_key in (
+    "TITAN_AGNES_API_BASE",
+    "TITAN_AGNES_API_KEY",
+    "TITAN_SARVAM_API_KEY",
+    "TITAN_WINDSOR_API_KEY",
+    "TITAN_AGNES_INTERFACE_VERIFIED",
+    "TITAN_SARVAM_INTERFACE_VERIFIED",
+):
+    os.environ.pop(_provider_key, None)
+
+# Tests must be hermetic. `_build_settings` re-reads the repository-root `.env`
+# on every build, and that file may hold live provider credentials and
+# interface-verified flags — which would silently change what these tests
+# assert. Disable the loader outright: everything a test needs is set in
+# `os.environ` above, or by the `env_override` fixture.
+from app import config as _config  # noqa: E402  (the env above must be set first)
+
+_config._load_dotenv = lambda path: None
 
 PRIMARY_EMAIL = "primary@titan.test"
 OTHER_EMAIL = "other@titan.test"

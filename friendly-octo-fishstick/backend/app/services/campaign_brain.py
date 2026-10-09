@@ -448,10 +448,19 @@ def _plan_from_dict(
     data: dict[str, Any],
     record: CampaignPlanRecord | None,
     *,
-    is_mock: bool = False,
-    provider: str = "unknown",
+    is_mock: bool | None = None,
+    provider: str | None = None,
     model: str | None = None,
 ) -> CampaignPlan:
+    # A stored plan carries its own provenance. Prefer that over the caller's
+    # default so re-reading a plan cannot relabel a mock plan as a live one
+    # (or vice versa) — the mock/live label must survive a reload.
+    if is_mock is None:
+        is_mock = bool(data.get("is_mock", False))
+    if provider is None:
+        provider = str(data.get("provider") or "unknown")
+    if model is None:
+        model = data.get("model")
     # Persisted plans serialize `copy` (channel → TokenizedCopy dict); raw
     # model envelopes use `copy_templates` (channel → template string).
     copy_templates = data.get("copy_templates") or data.get("copy") or {}

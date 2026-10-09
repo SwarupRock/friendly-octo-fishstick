@@ -59,6 +59,32 @@ def _base_url(settings: Settings) -> str:
     return (settings.sarvam_api_base or "https://api.sarvam.ai").rstrip("/")
 
 
+#: Our UI speaks in short codes ("en", "hi"); Sarvam wants BCP-47 ("en-IN").
+#: An unrecognised hint is dropped rather than sent, so the provider
+#: auto-detects instead of rejecting the request.
+_SARVAM_LANGUAGE_CODES = {
+    "en": "en-IN", "hi": "hi-IN", "kn": "kn-IN", "ta": "ta-IN", "te": "te-IN",
+    "ml": "ml-IN", "mr": "mr-IN", "bn": "bn-IN", "gu": "gu-IN", "pa": "pa-IN",
+    "od": "od-IN", "or": "od-IN", "ur": "ur-IN", "as": "as-IN", "ne": "ne-IN",
+    "si": "si-LK", "ar": "ar-AE", "de": "de-DE", "fr": "fr-FR", "es": "es-ES",
+}
+
+
+def sarvam_language_code(hint: str | None) -> str | None:
+    """Normalize a language hint to a code Sarvam accepts (or None)."""
+    if not hint:
+        return None
+    value = str(hint).strip()
+    if not value:
+        return None
+    if "-" in value:
+        language, _, region = value.partition("-")
+        if len(language) == 2 and len(region) == 2:
+            return f"{language.lower()}-{region.upper()}"
+        return None
+    return _SARVAM_LANGUAGE_CODES.get(value.lower())
+
+
 @dataclass
 class STTSarvamResult:
     transcript: str
@@ -86,8 +112,9 @@ class SarvamSTT(STTSarvamClient):
         url = f"{_base_url(settings)}/speech-to-text"
         files = {"file": ("audio", audio, mime or "audio/webm")}
         data = {"model": settings.sarvam_stt_model}
-        if language_hint:
-            data["language_code"] = language_hint
+        language_code = sarvam_language_code(language_hint)
+        if language_code:
+            data["language_code"] = language_code
 
         async def _call() -> dict[str, Any]:
             async with httpx.AsyncClient(timeout=60.0) as client:
@@ -166,11 +193,11 @@ class SarvamVoiceClone(VoiceCloneClient):
         settings = self._settings
         url = f"{_base_url(settings)}/voices/create"
         files = {"file": ("reference", audio, mime or "audio/wav")}
-        data = {"name": name, "language": language}
+        form = {"name": name, "language": language}
 
         async def _call() -> dict[str, Any]:
             async with httpx.AsyncClient(timeout=120.0) as client:
-                response = await client.post(url, headers=_headers(settings), files=files, data=data)
+                response = await client.post(url, headers=_headers(settings), files=files, data=form)
             if response.status_code >= 400:
                 raise ProviderError(
                     f"Sarvam voice create failed ({response.status_code}).",
@@ -183,8 +210,8 @@ class SarvamVoiceClone(VoiceCloneClient):
         body = await with_retry(
             _call, provider=self.name, max_retries=1, backoff_base=1.0, timeout=120.0
         )
-        data = body.get("data") or {}
-        voice_id = data.get("voice_id") or body.get("voice_id")
+        payload = body.get("data") or {}
+        voice_id = payload.get("voice_id") or body.get("voice_id")
         if not voice_id:
             raise ProviderUnavailableError(
                 "Sarvam voice create returned no voice_id.",
@@ -192,8 +219,8 @@ class SarvamVoiceClone(VoiceCloneClient):
             )
         return VoiceCreateResult(
             voice_id=str(voice_id),
-            request_id=data.get("request_id") or body.get("request_id"),
-            reference_text=data.get("reference_text"),
+            request_id=payload.get("request_id") or body.get("request_id"),
+            reference_text=payload.get("reference_text"),
         )
 
     async def clone_speech(self, text: str, *, language_code: str, voice_id: str) -> VoiceCloneResult:

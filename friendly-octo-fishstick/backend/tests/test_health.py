@@ -16,7 +16,14 @@ def test_health_ok(client):
 def test_root_endpoint(client):
     response = client.get("/")
     assert response.status_code == 200
-    assert response.json()["name"] == "Titan API"
+    assert response.json()["name"] == "Svarah API"
+
+
+def test_root_health_alias(client):
+    """Monitoring probes `/health`; it must answer like `/api/health`."""
+    response = client.get("/health")
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"
 
 
 def test_modes_reports_providers(client):

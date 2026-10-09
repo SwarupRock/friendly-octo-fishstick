@@ -86,6 +86,23 @@ def test_plan_is_persisted_and_reusable(client):
     assert got["plan"]["version"] == first["version"]
 
 
+def test_plan_provenance_survives_a_reload(client):
+    """A re-read plan must keep its own mock/live label.
+
+    The plan row records who produced it; GET /plan must report that rather than
+    defaulting to a placeholder, so a mock plan can never be shown as live.
+    """
+    campaign_id = _create_campaign(client)
+    _lock(client, campaign_id)
+    created = client.post(f"/api/campaigns/{campaign_id}/plan").json()
+
+    got = client.get(f"/api/campaigns/{campaign_id}/plan").json()["plan"]
+    assert got["is_mock"] == created["is_mock"]
+    assert got["provider"] == created["provider"]
+    assert got["provider"] != "unknown"
+    assert got["model"] == created["model"]
+
+
 def test_localization_specs_present_for_targeted_languages(client):
     campaign_id = _create_campaign(client)
     _lock(client, campaign_id)

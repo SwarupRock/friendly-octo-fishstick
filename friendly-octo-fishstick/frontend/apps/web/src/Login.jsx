@@ -1,9 +1,10 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { AudioLines, ArrowRight, Sparkles, Lock, Mail, CheckCircle2, ShieldCheck, Zap } from 'lucide-react';
+import { ArrowRight, Lock, Mail, CheckCircle2, ShieldCheck, Zap } from 'lucide-react';
 import { useAuth } from './AuthContext';
-import { errorMessage } from './lib/api';
+import { errorMessage, getModes } from './lib/api';
 import ThemeToggle from './ThemeToggle';
+import Wordmark from './Wordmark.jsx';
 import './auth.css';
 
 export default function Login() {
@@ -14,6 +15,18 @@ export default function Login() {
   const [toast, setToast] = useState('');
   const { login, loginWithDemo } = useAuth();
   const navigate = useNavigate();
+
+  // The password-less demo sign-in exists only in mock mode. Ask the backend
+  // rather than guessing, so a live deployment never shows an affordance the
+  // server will refuse.
+  const [demoEnabled, setDemoEnabled] = useState(false);
+  useEffect(() => {
+    const controller = new AbortController();
+    getModes(controller.signal)
+      .then((modes) => setDemoEnabled(modes?.mode === 'mock'))
+      .catch(() => setDemoEnabled(false));
+    return () => controller.abort();
+  }, []);
 
   const handleLogin = async (e) => {
     e.preventDefault();
@@ -55,16 +68,9 @@ export default function Login() {
       <div className="auth-card-wrap">
         <div className="auth-card">
           <div className="auth-header">
-            <Link to="/" className="auth-logo">
-              <span className="logo-mark"><AudioLines size={20} strokeWidth={2.5}/></span>
-              <span className="logo-word">Svarah<span>.AI</span></span>
-            </Link>
-            <div className="auth-badge">
-              <Sparkles size={13}/>
-              <span>AI Voice Workspace</span>
-            </div>
+            <Wordmark size="lg" className="auth-logo" />
             <h1>Welcome back</h1>
-            <p>Log in to access your speech workspace, meeting notes, and dictionary.</p>
+            <p>Say what you are offering. Svarah writes the posts and gets them ready to share.</p>
           </div>
 
           {toast && (
@@ -73,27 +79,29 @@ export default function Login() {
             </div>
           )}
 
-          {/* Quick 1-Click Demo Login */}
-          <div className="demo-login-box">
-            <div className="demo-login-info">
-              <Zap size={18} className="zap-icon"/>
-              <div>
-                <b>Instant Demo Access</b>
-                <small>Sign in without a password — available while the backend runs in mock mode</small>
+          {/* Quick 1-Click Demo Login — mock mode only. */}
+          {demoEnabled ? (
+            <div className="demo-login-box">
+              <div className="demo-login-info">
+                <Zap size={18} className="zap-icon"/>
+                <div>
+                  <b>Instant Demo Access</b>
+                  <small>Sign in without a password — available while the backend runs in mock mode</small>
+                </div>
               </div>
+              <button
+                type="button"
+                className="btn-demo-quick"
+                onClick={handleDemoLogin}
+                disabled={loading}
+              >
+                {loading ? 'Logging in...' : <><span>Demo Login</span> <ArrowRight size={14}/></>}
+              </button>
             </div>
-            <button
-              type="button"
-              className="btn-demo-quick"
-              onClick={handleDemoLogin}
-              disabled={loading}
-            >
-              {loading ? 'Logging in...' : <><span>Demo Login</span> <ArrowRight size={14}/></>}
-            </button>
-          </div>
+          ) : null}
 
           <div className="auth-divider">
-            <span>OR CONTINUE WITH EMAIL</span>
+            <span>{demoEnabled ? 'OR CONTINUE WITH EMAIL' : 'CONTINUE WITH EMAIL'}</span>
           </div>
 
           <form onSubmit={handleLogin} className="auth-form">

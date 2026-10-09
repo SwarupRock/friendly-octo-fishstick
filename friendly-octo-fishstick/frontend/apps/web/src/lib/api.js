@@ -462,6 +462,69 @@ export function exportCampaign(campaignId, signal) {
   return request(`/campaigns/${campaignId}/publish/export`, { signal, timeoutMs: 45_000 });
 }
 
+// ── live transcription preview ──────────────────────────────────────────
+/** Absolute ws:// or wss:// URL for an API path. */
+function wsUrl(path, language) {
+  const origin = API_BASE || `${window.location.protocol}//${window.location.host}`;
+  const url = new URL(`${origin}/api${path}`);
+  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+  if (language) url.searchParams.set('language', language);
+  return url.toString();
+}
+
+/**
+ * Open the live-transcription preview socket.
+ *
+ * The session token travels in the first message, never the query string, so a
+ * credential cannot leak through a URL or an access log. Events: `ready`,
+ * `partial`, `final`, `unavailable`, `error`. A failure here is never fatal —
+ * the finished clip is still transcribed by the normal pipeline.
+ */
+export function openSttStream({ token, language, onEvent, onError } = {}) {
+  let socket;
+  try {
+    socket = new WebSocket(wsUrl('/stt/stream', language));
+  } catch (error) {
+    onError?.(error);
+    return { send() {}, stop() {}, close() {} };
+  }
+
+  socket.onopen = () => {
+    try {
+      socket.send(JSON.stringify({ type: 'auth', token }));
+    } catch {
+      /* the socket closed before the greeting landed */
+    }
+  };
+  socket.onmessage = (event) => {
+    try {
+      onEvent?.(JSON.parse(event.data));
+    } catch {
+      /* ignore a malformed frame rather than break the recording */
+    }
+  };
+  socket.onerror = () => {
+    onError?.(new ApiError('The live transcription connection failed.', 'stream_error', 0));
+  };
+
+  return {
+    /** Forward one audio chunk (ArrayBuffer/Blob). No-op until it is open. */
+    send(data) {
+      if (socket.readyState === WebSocket.OPEN) socket.send(data);
+    },
+    stop() {
+      if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'stop' }));
+    },
+    close() {
+      try {
+        socket.close();
+      } catch {
+        /* already closed */
+      }
+    },
+  };
+}
+
 // ── helpers ─────────────────────────────────────────────────────────────
 /** Base64 (no data-URL prefix) for a recorded or selected audio blob. */
 export function blobToBase64(blob) {

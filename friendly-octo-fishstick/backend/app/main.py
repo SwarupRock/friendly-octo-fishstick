@@ -19,6 +19,7 @@ from .api import (
     health,
     plans,
     publisher,
+    stt_stream,
     videos,
     voice_profiles,
 )
@@ -117,6 +118,7 @@ def create_app() -> FastAPI:
 
     app.include_router(health.router, prefix="/api")
     app.include_router(auth.router, prefix="/api")
+    app.include_router(stt_stream.router, prefix="/api")
     app.include_router(campaigns.router, prefix="/api")
     app.include_router(factsheets.router, prefix="/api")
     app.include_router(plans.router, prefix="/api")
@@ -128,7 +130,17 @@ def create_app() -> FastAPI:
 
     @app.get("/", include_in_schema=False)
     def root() -> dict[str, str]:
-        return {"name": "Titan API", "docs": "/docs", "health": "/api/health"}
+        return {"name": "Svarah API", "docs": "/docs", "health": "/api/health"}
+
+    @app.get("/health", include_in_schema=False)
+    def health_alias():
+        """Root-level liveness alias.
+
+        Monitoring agents and load balancers routinely probe `/health`; the
+        canonical endpoint lives under `/api`. This returns the same payload so
+        those probes succeed instead of filling the log with 404s.
+        """
+        return health.health()
 
     return app
 
