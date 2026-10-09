@@ -1,0 +1,126 @@
+# Svarah.ai — Product Architecture
+
+> **Create once. Publish everywhere. Facts remain trustworthy.**
+
+Svarah.ai is a voice-first marketing workspace for small businesses. A shopkeeper
+describes an offer by voice or text; the system extracts the *facts*, the owner
+confirms and locks them, and only then does AI write copy, build media, verify it
+against the locked facts, and prepare it for publication.
+
+## The one architectural rule
+
+**Facts are the source of truth; generated creative is not.** Every downstream
+artifact is validated against an immutable, HMAC-sealed FactSheet before it can
+be approved or published. This is enforced in code, not in the UI.
+
+## Repository layout
+
+| Role | Path |
+| --- | --- |
+| Backend (canonical) | `friendly-octo-fishstick/backend` |
+| Web frontend (canonical) | `friendly-octo-fishstick/frontend/apps/web` |
+| Mobile (Expo, secondary) | `friendly-octo-fishstick/frontend/apps/mobile` |
+| Shared workspace package | `friendly-octo-fishstick/frontend/packages/shared` |
+| Docs | `friendly-octo-fishstick/docs` |
+
+`friendly-octo-fishstick/` is the single source of truth. `D:\GLM magic\apps`,
+`D:\GLM magic\packages`, and the `wispr-flow-frontend (2)/…` tree are older
+pre-rename snapshots and are not wired to anything.
+
+## Backend
+
+FastAPI application factory (`app/main.py`) mounting routers under `/api`:
+
+```
+app/
+  main.py          app factory, lifespan, request-size middleware, CORS
+  config.py         settings loader (.env, env vars, validation)
+  db.py             SQLite/SQLAlchemy engine, create_all + additive migrations
+  models.py         ORM: User, Shop, Campaign, FactSheetRecord, AssetRecord,
+                    CampaignPlanRecord, JobRecord, VerificationResultRecord,
+                    PublishRecord, VoiceProfile, AuditEvent
+  schemas.py        API read/write contracts (response models)
+  security.py       password hashing, signed session tokens, owner-uid derivation
+  deps.py           current_user + ownership resolvers (owned_campaign/asset/…)
+  errors.py         typed errors -> {error:{code,message,details}} envelope
+  storage.py        filesystem asset store (path-safe reads)
+  api/              health, auth, campaigns, factsheets, plans, assets,
+                    voice_profiles, videos, guardian_api, publisher
+  services/         fact engine, normalization, extraction, campaign brain,
+                    assets, voice, video, STT, gateway, sarvam, agnes,
+                    windsor, poster, ocr, asr, checksums, publisher_service
+  guardian/         deterministic verification runner, text checks, certificate
+```
+
+### Fact Integrity Engine (do not casually refactor)
+
+1. Input → transcription → deterministic **normalization** → FactSheet draft.
+2. Owner edits via `PATCH /factsheets/{id}` (creates a new version if locked).
+3. `lock` computes a canonical **SHA-256** over the facts and an **HMAC seal**
+   (`TITAN_SEAL_SECRET`); the version becomes immutable.
+4. The **campaign brain** builds copy from **fact tokens**, never literal values.
+5. Trusted substitution injects only locked values into templates.
+6. **Guardian** verifies each asset (numeric parity, day parity, token residue,
+   unsupported claims, poster registry, OCR when available, ASR round-trip).
+   A `FAIL` cannot be overridden; an inconclusive `NEEDS_REVIEW` can be accepted
+   by an explicit, audited **human verification**.
+7. Approval **binds** the caption hash and asset hashes; execution re-checks
+   them, so a later edit invalidates the approval.
+
+Seals: tampering with the facts or an invalid seal makes planning fail closed
+(`facts_not_locked`). Verification failures block approval and publishing.
+
+## Frontend
+
+React 18 + Vite 6. Signature visual system preserved (Manrope/Georgia type,
+DM Mono labels, lime accent, GSAP hero, WebGL ribbon-field shader).
+
+```
+apps/web/src/
+  main.jsx           route table + marketing pages
+  SvarahHero.jsx     animated hero (GSAP) — ex-FormeHero
+  workspace/         the signed-in campaign journey
+    Workspace.jsx        shell + campaign dashboard + step router
+    CaptureStep.jsx      voice/typed input  (create campaign)
+    FactReviewStep.jsx   review, correct, lock, integrity card
+    PlanStep.jsx         channels + tokenized copy
+    AssetsStep.jsx       posters, voice, reel jobs
+    VerifyStep.jsx       Guardian results, repair, human decision, certificate
+    PublishStep.jsx      prepare/approve/execute + export + wa.me
+    hooks.js, ui.jsx     resource/async hooks and shared primitives
+  lib/api.js         the single typed API client (auth, timeout, errors)
+  AuthContext.jsx    backend-backed session state
+  Login.jsx / Signup.jsx
+```
+
+### Golden path
+
+```
+capture → extract facts → review → LOCK (hash + seal) → plan (token templates)
+→ posters + captions + voice + reel → Guardian verify → (repair / human review)
+→ certificate → explicit approval → export / sandbox publish / wa.me
+```
+
+The workspace reloads the affected resource from the backend after every
+mutation; it keeps no local mirror of campaign data that could drift.
+
+## Providers and modes
+
+| Concern | Mock mode (default) | Live mode |
+| --- | --- | --- |
+| Extraction/planning/copy | deterministic token-safe templates (`is_mock`) | Agnes (`agnes-3.0-flash`) |
+| Poster art | Pillow gradient fallback + registry | Agnes image |
+| Video | FFmpeg Ken-Burns compositor | optional Agnes video |
+| STT | labelled mock / typed input | Sarvam Saaras v4 → faster-whisper |
+| Voice | labelled mock clone | Sarvam voice cloning |
+| Publishing | offline sandbox + `wa.me` only | Windsor MCP, after approval |
+
+Mock output is **always labelled**; nothing presents a mock as a live model run.
+Switching modes never changes the fact-integrity rules.
+
+## Related documents
+
+- `SVARAH_SETUP_AND_CONFIGURATION.md` — how to run it.
+- `SVARAH_API_INTEGRATION.md` — the HTTP contract.
+- `SVARAH_SECURITY_AND_DEPLOYMENT.md` — auth, limits, production gaps.
+- `SVARAH_IMPLEMENTATION_STATUS.md` — what is verified and what remains.

@@ -2,14 +2,14 @@ import React, { useEffect, useRef } from 'react';
 import { gsap } from 'gsap';
 import { ScrollTrigger } from 'gsap/ScrollTrigger';
 import { ArrowRight, Check, Play, Sparkles, X, Menu, Search, Image as ImageIcon, Video, Calendar, User, UploadCloud, Link as LinkIcon, Smartphone, Settings, Heart, MessageCircle, Send, Bookmark, MoreHorizontal, Share2, Music, Repeat2, BarChart2, Share, ThumbsUp, MessageSquare, Globe2 } from 'lucide-react';
-import './forme.css';
+import './svarah.css';
 import { Link, NavLink, useLocation } from 'react-router-dom';
 
 import { useAuth } from './AuthContext';
 
 gsap.registerPlugin(ScrollTrigger);
 
-export function FormeHeader() {
+export function SvarahHeader() {
   const [open, setOpen] = React.useState(false);
   const loc = useLocation();
   const { user } = useAuth();
@@ -17,18 +17,18 @@ export function FormeHeader() {
   useEffect(() => setOpen(false), [loc.pathname]);
   
   return (
-    <header className="site-header forme-header">
+    <header className="site-header svarah-header">
       <div className="nav-wrap">
-        <Link className="forme-logo" to="/">FORME</Link>
+        <Link className="svarah-logo" to="/">SVARAH.AI</Link>
         <nav className={open ? 'nav-links open' : 'nav-links'}>
-          <NavLink className="nav-link" to="/product">Product</NavLink>
-          <NavLink className="nav-link" to="/solutions">Solutions</NavLink>
-          <NavLink className="nav-link" to="/templates">Templates</NavLink>
-          <NavLink className="nav-link" to="/resources">Resources</NavLink>
+          <NavLink className="nav-link" to="/why-flow">Product</NavLink>
+          <NavLink className="nav-link" to="/business">Solutions</NavLink>
+          <NavLink className="nav-link" to="/developers">Developers</NavLink>
+          <NavLink className="nav-link" to="/notetaker">Notetaker</NavLink>
           <NavLink className="nav-link" to="/pricing">Pricing</NavLink>
           <div className="mobile-nav-cta">
             {user ? (
-              <Link className="button btn-lime" to="/dashboard">Dashboard <ArrowRight size={16}/></Link>
+              <Link className="button btn-lime" to="/workspace">Open workspace <ArrowRight size={16}/></Link>
             ) : (
               <>
                 <Link className="nav-link" to="/login">Log in</Link>
@@ -39,11 +39,11 @@ export function FormeHeader() {
         </nav>
         <div className="nav-actions">
           {user ? (
-            <Link className="button btn-lime nav-cta" to="/dashboard">
+            <Link className="button btn-lime nav-cta" to="/workspace">
               <span style={{width: 20, height: 20, borderRadius: '50%', background: '#171814', color: '#d8f878', display: 'grid', placeItems: 'center', fontSize: 10, fontWeight: 700}}>
                 {user.avatar || 'U'}
               </span>
-              <span>Dashboard</span>
+              <span>Workspace</span>
               <ArrowRight size={15}/>
             </Link>
           ) : (
@@ -61,18 +61,18 @@ export function FormeHeader() {
   );
 }
 
-export function FormeHero() {
+export function SvarahHero() {
   const container = useRef(null);
   
   useEffect(() => {
     let ctx = gsap.context(() => {
       const tl = gsap.timeline();
       
-      tl.from('.forme-eyebrow', { y: 20, opacity: 0, duration: 0.6, ease: "power3.out" })
+      tl.from('.svarah-eyebrow', { y: 20, opacity: 0, duration: 0.6, ease: "power3.out" })
         .to('.reveal-char', { opacity: 1, stagger: 0.04, duration: 0.1, ease: "none" }, "-=0.4")
-        .from('.forme-sub', { y: 20, opacity: 0, duration: 0.6, ease: "power3.out" }, "-=0.6")
-        .from('.forme-actions', { y: 20, opacity: 0, duration: 0.6, ease: "power3.out" }, "-=0.5")
-        .from('.forme-checks', { y: 20, opacity: 0, duration: 0.6, ease: "power3.out" }, "-=0.4")
+        .from('.svarah-sub', { y: 20, opacity: 0, duration: 0.6, ease: "power3.out" }, "-=0.6")
+        .from('.svarah-actions', { y: 20, opacity: 0, duration: 0.6, ease: "power3.out" }, "-=0.5")
+        .from('.svarah-checks', { y: 20, opacity: 0, duration: 0.6, ease: "power3.out" }, "-=0.4")
         .from('.visual-item', { 
            y: 100, 
            opacity: 0, 
@@ -91,12 +91,12 @@ export function FormeHero() {
   }, []);
 
   return (
-    <section className="forme-hero" ref={container}>
-      <div className="forme-hero-inner">
+    <section className="svarah-hero" ref={container}>
+      <div className="svarah-hero-inner">
         
-        <div className="forme-hero-copy">
-          <div className="forme-eyebrow">THE AI MARKETING WORKSPACE</div>
-          <h1 className="forme-headline">
+        <div className="svarah-hero-copy">
+          <div className="svarah-eyebrow">VOICE FOR BUSINESS</div>
+          <h1 className="svarah-headline">
             {"CREATE ONCE.".split('').map((char, i) => (
               <span key={`l1-${i}`} className="reveal-char" style={{opacity: 0.2}}>{char}</span>
             ))}
@@ -105,26 +105,26 @@ export function FormeHero() {
               <span key={`l2-${i}`} className="reveal-char" style={{opacity: 0.2}}>{char}</span>
             ))}
           </h1>
-          <p className="forme-sub">Turn your ideas into high-converting content and automatically publish across all your marketing channels.</p>
-          <div className="forme-actions">
-            <Link className="button btn-lime" to="/">Start Creating Free <ArrowRight size={17}/></Link>
-            <button className="button btn-demo"><Play fill="currentColor" size={14}/> Watch 1 Min Demo</button>
+          <p className="svarah-sub">Speak, and Svarah.AI turns it into polished content - ready to publish across every channel.</p>
+          <div className="svarah-actions">
+            <Link className="button btn-lime" to="/signup">Start Creating Free <ArrowRight size={17}/></Link>
+            <Link className="button btn-demo" to="/web-demo"><Play fill="currentColor" size={14}/> See the interactive demo</Link>
           </div>
-          <div className="forme-checks">
-            <span><Check size={14}/> Social media</span>
-            <span><Check size={14}/> Ads</span>
-            <span><Check size={14}/> Email campaigns</span>
-            <span><Check size={14}/> Websites</span>
-            <span><Check size={14}/> All in one place</span>
+          <div className="svarah-checks">
+            <span><span className="tick-dot"/> Social media</span>
+            <span><span className="tick-dot"/> Ads</span>
+            <span><span className="tick-dot"/> Email campaigns</span>
+            <span><span className="tick-dot"/> Websites</span>
+            <span><span className="tick-dot"/> All in one place</span>
           </div>
         </div>
 
-        <div className="forme-hero-visuals">
+        <div className="svarah-hero-visuals">
           
           {/* Main Central App Mockup */}
           <div className="visual-item parallax-layer-1 mock-app">
             <div className="app-header">
-              <span className="app-logo">FORME <span className="slash">/</span></span>
+              <span className="app-logo">SVARAH.AI <span className="slash">/</span></span>
               <div className="app-search">
                 <Search size={12}/>
                 <div className="search-dots"><i/><i/><i/><i/><i/></div>
@@ -203,17 +203,17 @@ export function FormeHero() {
             </div>
           </div>
 
-          {/* Floating Phone: Instagram */}
+          {/* Floating Phone: Social feed */}
           <div className="visual-item parallax-layer-2 float-slow phone-ig">
             <div className="phone-mock">
               <div className="phone-head ig-head">
-                <span className="ig-logo">Instagram</span>
+                <span className="ig-logo">Social</span>
                 <span className="ig-icons"><Heart size={16}/><MessageCircle size={16}/></span>
               </div>
               <div className="ph-body">
                 <div className="ph-post-header">
                   <span className="ph-avatar"></span>
-                  <div className="ig-user-info"><b>forme.ai</b><span>Sponsored</span></div>
+                  <div className="ig-user-info"><b>svarah.ai</b><span>Sponsored</span></div>
                   <MoreHorizontal size={14} className="ig-more"/>
                 </div>
                 <div className="ph-content green-post">
@@ -224,12 +224,12 @@ export function FormeHero() {
                   <Bookmark size={16}/>
                 </div>
                 <div className="ig-likes">2,412 likes</div>
-                <p className="ph-caption"><b>forme.ai</b> Create, automate and publish your marketing content...</p>
+                <p className="ph-caption"><b>svarah.ai</b> Create, automate and publish your marketing content...</p>
               </div>
             </div>
           </div>
 
-          {/* Floating Phone: TikTok */}
+          {/* Floating Phone: Short video */}
           <div className="visual-item parallax-layer-3 float-fast phone-tk">
             <div className="phone-mock dark-mock">
                <div className="ph-body full-bg product-img-1">
@@ -243,16 +243,16 @@ export function FormeHero() {
                      <div className="tk-music-disc"><Music size={12}/></div>
                    </div>
                    <div className="ph-tk-bottom">
-                     <div className="ph-tk-user"><b>@forme.ai</b></div>
+                     <div className="ph-tk-user"><b>@svarah.ai</b></div>
                      <p>AI-powered content for every channel. #marketing #ai</p>
-                     <div className="tk-music-ticker"><Music size={10}/> <span>Original sound - forme.ai</span></div>
+                     <div className="tk-music-ticker"><Music size={10}/> <span>Original sound - svarah.ai</span></div>
                    </div>
                  </div>
                </div>
             </div>
           </div>
 
-          {/* Floating Phone: X/Twitter */}
+          {/* Floating Phone: Microblog */}
           <div className="visual-item parallax-layer-2 float-med phone-tw">
              <div className="phone-mock dark-mock tw-mock">
                <div className="tw-top-bar">
@@ -264,14 +264,14 @@ export function FormeHero() {
                   <div className="ph-tw-post">
                     <div className="ph-tw-head">
                       <span className="ph-avatar"></span>
-                      <div className="tw-user-info"><b>Forme</b> <span>@formeai · 2h</span></div>
+                      <div className="tw-user-info"><b>Svarah.AI</b> <span>@svarahai · 2h</span></div>
                       <MoreHorizontal size={14} className="tw-more"/>
                     </div>
                     <p>One idea. Endless possibilities.<br/>Create, customize and publish your marketing content with AI.</p>
                     <div className="ph-tw-card">
                       <div className="ph-product-mini product-img-3"></div>
                       <div className="tw-card-text">
-                        <small>forme.ai</small>
+                        <small>svarah.ai</small>
                         <h3>Automate Your Marketing</h3>
                       </div>
                     </div>
@@ -287,11 +287,11 @@ export function FormeHero() {
              </div>
           </div>
 
-          {/* Floating Phone: Facebook */}
+          {/* Floating Phone: Community */}
           <div className="visual-item parallax-layer-3 float-slow phone-fb">
             <div className="phone-mock">
               <div className="ph-fb-head">
-                <span className="fb-logo">facebook</span> 
+                <span className="fb-logo">Social</span> 
                 <div className="fb-head-icons">
                   <Search size={16}/>
                   <MessageCircle size={16}/>
@@ -300,14 +300,14 @@ export function FormeHero() {
               <div className="ph-body fb-body">
                 <div className="ph-post-header fb-post-header">
                   <span className="ph-avatar"></span>
-                  <div className="fb-user-info"><b>Forme</b><span>Sponsored · <Globe2 size={10}/></span></div>
+                  <div className="fb-user-info"><b>Svarah.AI</b><span>Sponsored · <Globe2 size={10}/></span></div>
                   <MoreHorizontal size={14} className="fb-more"/>
                 </div>
                 <p className="ph-fb-text">Build your brand. Grow faster. Let AI handle your marketing content across every channel.</p>
                 <div className="ph-content sand-post">
                   <div className="ph-product-small product-img-1"></div>
                   <div className="fb-card-bottom">
-                    <small>FORME.AI</small>
+                    <small>SVARAH.AI</small>
                     <h3>Automate Your Marketing</h3>
                     <button className="fb-btn">Learn more</button>
                   </div>
@@ -325,7 +325,7 @@ export function FormeHero() {
             </div>
           </div>
           
-          {/* Floating Phone: LinkedIn */}
+          {/* Floating Phone: Professional */}
           <div className="visual-item parallax-layer-1 float-fast phone-li">
              <div className="phone-mock">
               <div className="ph-li-head">
@@ -339,7 +339,7 @@ export function FormeHero() {
                 <div className="ph-post-header li-post-header">
                   <span className="ph-avatar li-avatar"></span>
                   <div className="li-user-info">
-                    <b>Forme</b>
+                    <b>Svarah.AI</b>
                     <small>24,832 followers</small>
                     <small>Promoted</small>
                   </div>
@@ -351,7 +351,7 @@ export function FormeHero() {
                 </div>
                 <div className="li-card-bottom">
                   <h3>Turn Ideas Into Impact</h3>
-                  <small>forme.ai</small>
+                  <small>svarah.ai</small>
                 </div>
                 <div className="fb-reactions li-reactions">
                   <span className="li-react-icons"><ThumbsUp size={10} fill="#fff"/></span> 1,204

@@ -350,6 +350,17 @@ def _serialize(record: PublishRecord) -> dict[str, Any]:
     }
 
 
+def list_records(db: Session, campaign_id: int) -> list[dict[str, Any]]:
+    """Every publication attempt for a campaign, oldest first."""
+    rows = (
+        db.query(PublishRecord)
+        .filter(PublishRecord.campaign_id == campaign_id)
+        .order_by(PublishRecord.id)
+        .all()
+    )
+    return [_serialize(r) for r in rows]
+
+
 def export_package(db: Session, campaign_id: int) -> dict[str, Any]:
     """Manual-ready export bundle (captions + publish manifest + asset refs)."""
     campaign = db.get(Campaign, campaign_id)
@@ -383,4 +394,4 @@ def export_package(db: Session, campaign_id: int) -> dict[str, Any]:
     return manifest
 
 
-__all__ = ["list_actions", "prepare", "approve", "execute", "export_package"]
+__all__ = ["list_actions", "prepare", "approve", "execute", "export_package", "list_records"]

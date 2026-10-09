@@ -9,8 +9,9 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from ..db import get_db
+from ..deps import current_user, owned_campaign
 from ..errors import NotFoundError
-from ..models import Campaign, FactSheetRecord
+from ..models import Campaign, FactSheetRecord, User
 from ..services.campaign_brain import (
     CampaignPlan,
     generate_plan,
@@ -63,11 +64,13 @@ def _plan_payload(plan: CampaignPlan) -> dict:
 
 
 @router.post("/{campaign_id}/plan", response_model=PlanRead)
-def create_plan(campaign_id: int, db: Session = Depends(get_db)) -> PlanRead:
+def create_plan(
+    campaign_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(current_user),
+) -> PlanRead:
     """Generate (mock-capable) the campaign plan for a locked campaign."""
-    campaign = db.get(Campaign, campaign_id)
-    if campaign is None:
-        raise NotFoundError(f"Campaign {campaign_id} was not found.", details={"campaign_id": campaign_id})
+    campaign = owned_campaign(db, campaign_id, user)
     settings = get_settings()
 
     # Seal-check the locked sheet before planning against it.
@@ -85,11 +88,13 @@ def create_plan(campaign_id: int, db: Session = Depends(get_db)) -> PlanRead:
 
 
 @router.get("/{campaign_id}/plan")
-def read_plan(campaign_id: int, db: Session = Depends(get_db)):
+def read_plan(
+    campaign_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(current_user),
+):
     """Return the plan + substituted copy (master + localized) for the campaign."""
-    campaign = db.get(Campaign, campaign_id)
-    if campaign is None:
-        raise NotFoundError(f"Campaign {campaign_id} was not found.", details={"campaign_id": campaign_id})
+    owned_campaign(db, campaign_id, user)
     record = get_plan_record(db, campaign_id)
     if record is None:
         raise NotFoundError(

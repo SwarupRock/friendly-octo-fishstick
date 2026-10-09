@@ -1,6 +1,6 @@
-# Wispr Flow — Frontend recreation
+# Svarah.AI — Web + mobile frontend
 
-A multi-page web + mobile frontend for the Titan voice-first marketing system, visually inspired by the public Wispr Flow website. This is an independent project and is not affiliated with or endorsed by Wispr AI. Authentication and dictation are frontend demos for now — the web app connects to the existing Titan FastAPI backend for data and generation features.
+Svarah.AI — voice for business. A multi-page web + mobile frontend for the Titan voice-first marketing system. Authentication and dictation are frontend demos for now — the web app connects to the existing Titan FastAPI backend for data and generation features.
 
 ## Run locally
 
@@ -42,11 +42,11 @@ Unknown routes show a 404 page. Internal navigation is handled with React Router
 
 ## Motion and interaction resources
 
-The visual pass uses lightweight, locally implemented interactions inspired by the open-source component patterns in [React Bits](https://reactbits.dev/): scroll-triggered reveals, pointer-following spotlight cards, animated waveform details, floating product-demo panels, and responsive UI transitions. These are implemented directly in React/CSS so the project does not depend on a third-party animation runtime. React Bits is a separate project and is not bundled as a dependency.
+The visual pass uses lightweight, locally implemented interactions: scroll-triggered reveals, pointer-following spotlight cards, animated waveform details, floating product-demo panels, and responsive UI transitions. These are implemented directly in React/CSS so the project does not depend on a third-party animation runtime.
 
 ## Notes
 
 - The project contains frontend simulations only. It does not request microphone permissions or claim to transcribe speech.
 - Commercial details and feature availability can change. Verify current information on the official website.
-- Fonts use Google Fonts when online, with system fallbacks.
-- Original Wispr Flow assets are not bundled unless included in this project; some visual elements are recreated as frontend mockups.
+- Fonts fall back to system fonts when offline.
+- Some visual elements are recreated as frontend mockups.

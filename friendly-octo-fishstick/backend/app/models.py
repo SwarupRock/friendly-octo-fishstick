@@ -82,10 +82,38 @@ class FactSheetStatus:
     ALL = (DRAFT, LOCKED, SUPERSEDED)
 
 
+class User(Base):
+    """A registered account.
+
+    ``owner_uid`` — not the row id — is the identifier every owned record
+    references, so a database reset keeps existing tokens meaningful and no
+    resource is ever addressed by a guessable sequential owner number.
+    """
+
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    owner_uid: Mapped[str] = mapped_column(String(128), nullable=False, unique=True, index=True)
+    email: Mapped[str] = mapped_column(String(255), nullable=False, unique=True, index=True)
+    display_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    #: Null for a demo account created by the mock-mode password-less sign-in.
+    password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    is_demo: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    last_login_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
 class Shop(Base):
     __tablename__ = "shops"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    #: Owning account. Nullable only so pre-authentication rows still load;
+    #: a null owner is unreachable through the API (see `app.deps`).
+    owner_uid: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     handle: Mapped[str | None] = mapped_column(String(255), nullable=True)
     location: Mapped[str | None] = mapped_column(String(255), nullable=True)
@@ -105,6 +133,11 @@ class Campaign(Base):
     shop_id: Mapped[int] = mapped_column(
         ForeignKey("shops.id"), nullable=False, index=True
     )
+    #: Denormalized owner, copied from the shop at creation. Every campaign
+    #: query filters on this column, so no request can reach another account's
+    #: campaign by guessing an id. Nullable only for pre-authentication rows,
+    #: which are unreachable through the API.
+    owner_uid: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     # Raw transcript is immutable once captured (Source of Truth §7).
     transcript: Mapped[str | None] = mapped_column(Text, nullable=True)
     normalized_transcript: Mapped[str | None] = mapped_column(Text, nullable=True)

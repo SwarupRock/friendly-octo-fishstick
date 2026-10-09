@@ -1,4 +1,9 @@
-"""Voice endpoints (Phases 5A/5B)."""
+"""Voice endpoints (Phases 5A/5B).
+
+The owner of a voice profile is the authenticated account. `owner_uid` is no
+longer accepted from the client on any of these routes — a cloned voice is
+exactly the kind of resource a guessable identifier must never unlock.
+"""
 
 from __future__ import annotations
 
@@ -11,8 +16,10 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from ..db import get_db
+from ..deps import current_user, owned_campaign
 from ..errors import ValidationError
-from ..models import Campaign
+from ..models import User
+from ..services.assets_service import serialize_asset
 from ..services.voice_service import (
     create_voice_profile,
     delete_profile,
@@ -21,7 +28,6 @@ from ..services.voice_service import (
     list_profiles,
     serialize_profile,
 )
-from ..services.assets_service import serialize_asset
 
 router = APIRouter(tags=["voice"])
 
@@ -29,7 +35,6 @@ SUPPORTED = ["English", "Hindi", "Kannada", "Tamil", "Telugu"]
 
 
 class ProfileCreate(BaseModel):
-    owner_uid: str = Field(min_length=1, max_length=128)
     display_name: str = Field(min_length=1, max_length=128)
     consent_confirmed: bool
     consent_record: dict | None = None
@@ -42,21 +47,27 @@ class ProfileCreate(BaseModel):
 
 class VoiceGenerateRequest(BaseModel):
     profile_id: int
-    owner_uid: str = Field(min_length=1, max_length=128)
     language: str
 
 
 @router.post("/voice-profiles", response_model=dict, status_code=201)
-def create_profile(payload: ProfileCreate, db: Session = Depends(get_db)) -> dict:
+def create_profile(
+    payload: ProfileCreate,
+    db: Session = Depends(get_db),
+    user: User = Depends(current_user),
+) -> dict:
     audio: bytes | None = None
     if payload.reference_audio_b64:
         try:
             audio = base64.b64decode(payload.reference_audio_b64, validate=True)
         except (binascii.Error, ValueError) as exc:
             raise ValidationError("'reference_audio_b64' is not valid base64.", code="invalid_audio") from exc
+    # A campaign may only be attached to a profile by its own owner.
+    if payload.campaign_id is not None:
+        owned_campaign(db, payload.campaign_id, user)
     record = create_voice_profile(
         db,
-        owner_uid=payload.owner_uid,
+        owner_uid=user.owner_uid,
         display_name=payload.display_name,
         consent_confirmed=payload.consent_confirmed,
         consent_record=payload.consent_record,
@@ -71,34 +82,46 @@ def create_profile(payload: ProfileCreate, db: Session = Depends(get_db)) -> dic
 
 
 @router.get("/voice-profiles", response_model=list[dict])
-def get_profiles(owner_uid: str, db: Session = Depends(get_db)) -> list[dict]:
-    return [serialize_profile(p) for p in list_profiles(db, owner_uid)]
+def get_profiles(
+    db: Session = Depends(get_db),
+    user: User = Depends(current_user),
+) -> list[dict]:
+    return [serialize_profile(p) for p in list_profiles(db, user.owner_uid)]
 
 
 @router.get("/voice-profiles/{profile_id}", response_model=dict)
-def get_profile(profile_id: int, owner_uid: str, db: Session = Depends(get_db)) -> dict:
-    return serialize_profile(get_owned_profile(db, profile_id, owner_uid))
+def get_profile(
+    profile_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(current_user),
+) -> dict:
+    return serialize_profile(get_owned_profile(db, profile_id, user.owner_uid))
 
 
 @router.delete("/voice-profiles/{profile_id}", status_code=204)
-def remove_profile(profile_id: int, owner_uid: str, db: Session = Depends(get_db)) -> Response:
-    delete_profile(db, profile_id, owner_uid)
+def remove_profile(
+    profile_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(current_user),
+) -> Response:
+    delete_profile(db, profile_id, user.owner_uid)
     db.commit()
     return Response(status_code=204)
 
 
 @router.post("/campaigns/{campaign_id}/voice", response_model=dict, status_code=201)
-def generate_voice(campaign_id: int, payload: VoiceGenerateRequest, db: Session = Depends(get_db)) -> dict:
-    campaign = db.get(Campaign, campaign_id)
-    if campaign is None:
-        from ..errors import NotFoundError
-
-        raise NotFoundError(f"Campaign {campaign_id} was not found.")
+def generate_voice(
+    campaign_id: int,
+    payload: VoiceGenerateRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(current_user),
+) -> dict:
+    owned_campaign(db, campaign_id, user)
     record = generate_localized_voice(
         db,
         campaign_id=campaign_id,
         profile_id=payload.profile_id,
-        owner_uid=payload.owner_uid,
+        owner_uid=user.owner_uid,
         language=payload.language,
     )
     db.commit()

@@ -8,6 +8,7 @@ dataclass avoids pulling in `pydantic-settings` for a handful of values.
 from __future__ import annotations
 
 import os
+import secrets
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -116,6 +117,15 @@ class Settings:
     enable_demo_sabotage: bool
     #: Dedicated HMAC key for the fact-lock seal. Never logged or returned.
     seal_secret: str | None
+    #: Dedicated HMAC key for session tokens. Never logged or returned.
+    #: Kept separate from `seal_secret` so rotating one never weakens the other.
+    auth_secret: str | None
+    #: True when `auth_secret` was generated for this process only (mock mode
+    #: convenience). Tokens stay unforgeable but do not survive a restart.
+    auth_secret_ephemeral: bool
+    auth_token_ttl_hours: int
+    allow_demo_login: bool
+    max_request_bytes: int
     app_version: str = APP_VERSION
 
     @property
@@ -125,6 +135,26 @@ class Settings:
     @property
     def seal_configured(self) -> bool:
         return bool(self.seal_secret and self.seal_secret.strip())
+
+    @property
+    def auth_configured(self) -> bool:
+        """True when session tokens can be signed at all."""
+        return bool(self.auth_secret and self.auth_secret.strip())
+
+    @property
+    def auth_production_ready(self) -> bool:
+        """True only with a durable, operator-supplied auth secret.
+
+        Live mode refuses to serve authentication without one: an ephemeral
+        per-process key would silently log every user out on each restart and
+        cannot be shared across replicas.
+        """
+        return self.auth_configured and not self.auth_secret_ephemeral
+
+    @property
+    def demo_login_enabled(self) -> bool:
+        """Password-less demo sign-in — mock mode only, never in live mode."""
+        return self.is_mock and self.allow_demo_login
 
     @property
     def max_audio_bytes(self) -> int:
@@ -189,6 +219,18 @@ def _build_settings() -> Settings:
     origins = _env("TITAN_CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173")
     cors_origins = tuple(o.strip() for o in (origins or "").split(",") if o.strip())
 
+    # Session-token key. A missing key is NOT treated as "no auth needed":
+    # mock mode mints a random per-process key (tokens remain unforgeable but
+    # do not survive a restart) and live mode refuses to serve auth at all.
+    auth_secret = _env("TITAN_AUTH_SECRET")
+    auth_secret_ephemeral = False
+    if not auth_secret:
+        if mode == "mock":
+            auth_secret = secrets.token_urlsafe(48)
+            auth_secret_ephemeral = True
+        else:
+            auth_secret = None
+
     return Settings(
         titan_mode=mode,
         database_url=database_url,
@@ -229,6 +271,11 @@ def _build_settings() -> Settings:
         windsor_cache_seconds=_env_int("TITAN_WINDSOR_CONNECTOR_CACHE_SECONDS", 300),
         enable_demo_sabotage=(_env("TITAN_ENABLE_DEMO_SABOTAGE", "false") or "false").lower() == "true",
         seal_secret=_env("TITAN_SEAL_SECRET"),
+        auth_secret=auth_secret,
+        auth_secret_ephemeral=auth_secret_ephemeral,
+        auth_token_ttl_hours=_env_int("TITAN_AUTH_TOKEN_TTL_HOURS", 72),
+        allow_demo_login=(_env("TITAN_ALLOW_DEMO_LOGIN", "true") or "true").lower() != "false",
+        max_request_bytes=_env_int("TITAN_MAX_REQUEST_BYTES", 32 * 1024 * 1024),
     )
 
 

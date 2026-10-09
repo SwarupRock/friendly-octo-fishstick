@@ -68,6 +68,27 @@ class ConflictError(TitanError):
     code = "conflict"
 
 
+class AuthenticationError(TitanError):
+    """No usable credential was presented (or it expired / failed signature)."""
+
+    status_code = 401
+    code = "unauthenticated"
+
+
+class AuthorizationError(TitanError):
+    """A valid principal asked for a resource it does not own."""
+
+    status_code = 403
+    code = "forbidden"
+
+
+class AuthUnavailableError(TitanError):
+    """Authentication cannot be served safely with the current configuration."""
+
+    status_code = 503
+    code = "auth_unavailable"
+
+
 class NormalizationError(TitanError):
     status_code = 422
     code = "normalization_error"

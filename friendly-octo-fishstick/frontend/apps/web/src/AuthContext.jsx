@@ -1,307 +1,132 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import * as api from './lib/api';
+
+/**
+ * Session state for the Svarah workspace.
+ *
+ * Identity comes from the backend: `login`/`signup`/`demoLogin` exchange
+ * credentials for a signed token, and every subsequent API call carries it.
+ * Nothing here invents a user — if the backend is unreachable or the token has
+ * expired, `user` is null and the workspace routes send you to /login.
+ */
 
 const AuthContext = createContext(null);
 
-const DEFAULT_DEMO_USER = {
-  id: 'usr_flow_9821',
-  name: 'Alex Rivera',
-  email: 'alex.rivera@wisprflow.ai',
-  avatar: 'AR',
-  plan: 'Pro Plan',
-  status: 'Active',
-  memberSince: 'March 2025',
-  stats: {
-    wordsDictated: 84920,
-    wpmAverage: 218,
-    timeSavedHours: 38.5,
-    accuracyRate: '99.4%',
-    sessionsCount: 342,
-  },
-  settings: {
-    primaryLanguage: 'English (US)',
-    secondaryLanguage: 'Hindi',
-    shortcut: 'Command + D',
-    micInput: 'Default - MacBook Pro Built-in Mic',
-    removeFillerWords: true,
-    smartPunctuation: true,
-    autoCapitalize: true,
-    formatCodeSnippets: true,
-    aiTone: 'Polished & Concise',
-    theme: 'dark',
-  },
-  vocabulary: [
-    { id: 'v1', word: 'Kubernetes', category: 'Engineering' },
-    { id: 'v2', word: 'Wispr Flow', category: 'Product' },
-    { id: 'v3', word: 'PyTorch', category: 'AI / ML' },
-    { id: 'v4', word: 'Supabase', category: 'Database' },
-    { id: 'v5', word: 'Next.js 15', category: 'Engineering' },
-    { id: 'v6', word: 'Kannada NLP', category: 'Languages' },
-    { id: 'v7', word: 'Figma Token Studio', category: 'Design' },
-    { id: 'v8', word: 'OAuth 2.1 PKCE', category: 'Security' },
-  ],
-  recentDictations: [
-    {
-      id: 'd1',
-      title: 'Email: Sprint Launch Update',
-      tag: 'Email',
-      timestamp: '10 minutes ago',
-      wordCount: 84,
-      duration: '0:24',
-      language: 'English (US)',
-      cleanText: 'Can you let the engineering team know that the launch is slipping to Monday? We are still waiting on legal to sign off on the new terms. We will have a firm timeline by end of day Thursday.',
-      rawText: 'Hey so um can you actually wait can you tell the team that the launch is gonna slip I think to like not Friday, the following Monday because we are still waiting on legal to sign off...',
-    },
-    {
-      id: 'd2',
-      title: 'Slack update to Maya (Product Design)',
-      tag: 'Slack',
-      timestamp: '1 hour ago',
-      wordCount: 42,
-      duration: '0:14',
-      language: 'English (US)',
-      cleanText: 'Hey Maya, I reviewed the updated figma components for the settings modal. Everything looks super crisp, especially the dark theme accents. Ready to merge whenever you are!',
-      rawText: 'Hey Maya uh I looked at the figma components like for the settings modal and everything looks great like really crisp especially dark theme so ready to merge whenever.',
-    },
-    {
-      id: 'd3',
-      title: 'ಹೊಸ ವೈಶಿಷ್ಟ್ಯಗಳ ವಿವರಣೆ (Kannada)',
-      tag: 'Notes',
-      timestamp: '3 hours ago',
-      wordCount: 38,
-      duration: '0:19',
-      language: 'Kannada (ಕನ್ನಡ)',
-      cleanText: 'ನಾಳೆ ಬೆಳಗ್ಗೆ 10 ಗಂಟೆಗೆ ಹೊಸ ಪ್ರಾಜೆಕ್ಟ್ ಮೀಟಿಂಗ್ ಇದೆ. ಎಲ್ಲರೂ ತಯಾರಾಗಿ ಬನ್ನಿ.',
-      rawText: 'ನಾಳೆ ಬೆಳಗ್ಗೆ 10 ಗಂಟೆಗೆ ಹೊಸ ಪ್ರಾಜೆಕ್ಟ್ ಮೀಟಿಂಗ್ ಇದೆ ಎಲ್ಲರೂ ತಯಾರಾಗಿ ಬನ್ನಿ',
-    },
-    {
-      id: 'd4',
-      title: 'React Custom Hook & Performance Optimization',
-      tag: 'Code',
-      timestamp: 'Yesterday at 4:15 PM',
-      wordCount: 65,
-      duration: '0:22',
-      language: 'English (US)',
-      cleanText: 'Refactor useDebounce to cancel trailing timers on component unmount and memoize the handler using useCallback with dependency array.',
-      rawText: 'So refactor the use debounce hook to cancel the trailing timer if component unmounts and memoize handler with use callback with dependency array.',
-    }
-  ],
-  meetings: [
-    {
-      id: 'm1',
-      title: 'Weekly Product & Engineering Sync',
-      date: 'Today, 10:00 AM',
-      duration: '42 min',
-      attendees: ['Alex Rivera', 'Nathalie Chen', 'Stephen Miller', 'Mikel S.'],
-      summary: 'The team reviewed sprint progress, aligned on reducing approval bottlenecks, and confirmed final QA for the Indic language rollout.',
-      actionItems: [
-        { id: 'a1', text: 'Streamline design review approvals in Figma', assignee: 'Stephen', done: true },
-        { id: 'a2', text: 'Benchmark Kannada & Hindi transcription accuracy', assignee: 'Alex', done: false },
-        { id: 'a3', text: 'Prepare analytics dashboard for Monday demo', assignee: 'Mikel', done: false },
-      ]
-    },
-    {
-      id: 'm2',
-      title: 'Design Critique: Multilingual Flow UI',
-      date: 'Yesterday, 2:30 PM',
-      duration: '28 min',
-      attendees: ['Alex Rivera', 'Maya Lin', 'Dave G.'],
-      summary: 'Discussed FormulaStream background integration and high-contrast settings modal with 10 Indic regional scripts.',
-      actionItems: [
-        { id: 'a4', text: 'Ensure dark theme glow effects match Wispr Lime #d8f878', assignee: 'Alex', done: true },
-        { id: 'a5', text: 'Check mobile responsiveness for language tabs', assignee: 'Maya', done: true },
-      ]
-    }
-  ],
-  apiKeys: [
-    { id: 'k1', name: 'Production Desktop Client', key: 'wf_live_894f29a0c71e892d4b819f7', created: 'Oct 02, 2026' },
-    { id: 'k2', name: 'CLI Development Key', key: 'wf_test_231c90a1b64e098d1a490e1', created: 'Oct 07, 2026' },
-  ]
-};
+/** Two-letter avatar initials from a display name or email. */
+function initialsFor(value) {
+  const source = (value || '').trim();
+  if (!source) return 'SV';
+  const words = source.includes('@') ? source.split('@')[0].split(/[._-]+/) : source.split(/\s+/);
+  const letters = words.filter(Boolean).map((w) => w[0]).join('');
+  return (letters || source[0]).toUpperCase().slice(0, 2);
+}
+
+function toUser(account) {
+  if (!account) return null;
+  return {
+    ownerUid: account.owner_uid,
+    email: account.email,
+    name: account.display_name || account.email,
+    avatar: initialsFor(account.display_name || account.email),
+    isDemo: Boolean(account.is_demo),
+  };
+}
 
 export function AuthProvider({ children }) {
-  const [user, setUser] = useState(() => {
-    const saved = localStorage.getItem('wispr_auth_user');
-    if (saved) {
-      try {
-        return JSON.parse(saved);
-      } catch (e) {
-        console.error('Failed to parse saved user', e);
-      }
-    }
-    return null;
-  });
+  const [user, setUser] = useState(null);
+  // `checking` covers the first round-trip that validates a stored token, so
+  // protected routes can wait instead of bouncing a signed-in user to /login.
+  const [checking, setChecking] = useState(true);
+  const [sessionNotice, setSessionNotice] = useState('');
+  const mounted = useRef(true);
 
   useEffect(() => {
-    if (user) {
-      localStorage.setItem('wispr_auth_user', JSON.stringify(user));
-    } else {
-      localStorage.removeItem('wispr_auth_user');
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+
+  // Validate any stored token against the backend on first mount. A token that
+  // the backend rejects (restarted with a new ephemeral key, expired, account
+  // deleted) is discarded rather than kept around to fail every later call.
+  useEffect(() => {
+    const stored = api.loadSession();
+    if (!stored) {
+      setChecking(false);
+      return undefined;
     }
-  }, [user]);
+    const controller = new AbortController();
+    api
+      .getAccount(controller.signal)
+      .then((account) => {
+        if (!mounted.current) return;
+        setUser(toUser(account));
+      })
+      .catch((error) => {
+        if (!mounted.current || controller.signal.aborted) return;
+        if (error instanceof api.ApiError && error.isOffline) {
+          // The backend is down, not the session. Keep the token and say so.
+          setSessionNotice('Backend unreachable — working offline until it returns.');
+        } else {
+          api.clearSession();
+          if (error?.code === 'token_expired') {
+            setSessionNotice('Your session expired. Sign in again.');
+          }
+        }
+      })
+      .finally(() => {
+        if (mounted.current) setChecking(false);
+      });
+    return () => controller.abort();
+  }, []);
 
-  const login = (email, password) => {
-    // Generate initials
-    const name = email.split('@')[0].replace('.', ' ');
-    const formattedName = name.charAt(0).toUpperCase() + name.slice(1);
-    const initials = formattedName.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2) || 'WF';
+  const adopt = useCallback((session) => {
+    const next = toUser(session.account);
+    setUser(next);
+    setSessionNotice(
+      session.ephemeralSigningKey
+        ? 'Demo session: the backend is signing tokens with a temporary key, so restarting it signs you out.'
+        : '',
+    );
+    return next;
+  }, []);
 
-    const loggedUser = {
-      ...DEFAULT_DEMO_USER,
-      email: email || DEFAULT_DEMO_USER.email,
-      name: email ? formattedName : DEFAULT_DEMO_USER.name,
-      avatar: initials,
-    };
-    setUser(loggedUser);
-    return loggedUser;
-  };
-
-  const loginWithDemo = () => {
-    setUser(DEFAULT_DEMO_USER);
-    return DEFAULT_DEMO_USER;
-  };
-
-  const signup = (name, email, password, language = 'English (US)') => {
-    const initials = name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2) || 'WF';
-    const newUser = {
-      ...DEFAULT_DEMO_USER,
-      id: `usr_flow_${Math.floor(1000 + Math.random() * 9000)}`,
-      name: name || 'Wispr User',
-      email: email || 'user@example.com',
-      avatar: initials,
-      plan: 'Free Plan',
-      memberSince: 'Just now',
-      settings: {
-        ...DEFAULT_DEMO_USER.settings,
-        primaryLanguage: language,
-      }
-    };
-    setUser(newUser);
-    return newUser;
-  };
-
-  const logout = () => {
-    setUser(null);
-  };
-
-  const updateUser = (updates) => {
-    setUser(prev => prev ? { ...prev, ...updates } : null);
-  };
-
-  const addDictation = (dictation) => {
-    setUser(prev => {
-      if (!prev) return null;
-      const newD = {
-        id: `d_${Date.now()}`,
-        timestamp: 'Just now',
-        ...dictation
-      };
-      const updatedWords = (prev.stats?.wordsDictated || 0) + (dictation.wordCount || 10);
-      return {
-        ...prev,
-        stats: {
-          ...prev.stats,
-          wordsDictated: updatedWords,
-          sessionsCount: (prev.stats?.sessionsCount || 0) + 1,
-        },
-        recentDictations: [newD, ...(prev.recentDictations || [])]
-      };
-    });
-  };
-
-  const deleteDictation = (id) => {
-    setUser(prev => {
-      if (!prev) return null;
-      return {
-        ...prev,
-        recentDictations: prev.recentDictations.filter(d => d.id !== id)
-      };
-    });
-  };
-
-  const addVocabulary = (word, category = 'Custom') => {
-    if (!word.trim()) return;
-    setUser(prev => {
-      if (!prev) return null;
-      const exists = prev.vocabulary.some(v => v.word.toLowerCase() === word.toLowerCase());
-      if (exists) return prev;
-      return {
-        ...prev,
-        vocabulary: [...prev.vocabulary, { id: `v_${Date.now()}`, word, category }]
-      };
-    });
-  };
-
-  const removeVocabulary = (id) => {
-    setUser(prev => {
-      if (!prev) return null;
-      return {
-        ...prev,
-        vocabulary: prev.vocabulary.filter(v => v.id !== id)
-      };
-    });
-  };
-
-  const toggleActionItem = (meetingId, itemId) => {
-    setUser(prev => {
-      if (!prev) return null;
-      return {
-        ...prev,
-        meetings: prev.meetings.map(m => {
-          if (m.id !== meetingId) return m;
-          return {
-            ...m,
-            actionItems: m.actionItems.map(item => item.id === itemId ? { ...item, done: !item.done } : item)
-          };
-        })
-      };
-    });
-  };
-
-  const addApiKey = (name) => {
-    setUser(prev => {
-      if (!prev) return null;
-      const newKey = {
-        id: `k_${Date.now()}`,
-        name: name || 'API Key',
-        key: `wf_live_${Math.random().toString(36).substring(2, 15)}${Math.random().toString(36).substring(2, 15)}`,
-        created: 'Just now'
-      };
-      return {
-        ...prev,
-        apiKeys: [...(prev.apiKeys || []), newKey]
-      };
-    });
-  };
-
-  const deleteApiKey = (id) => {
-    setUser(prev => {
-      if (!prev) return null;
-      return {
-        ...prev,
-        apiKeys: (prev.apiKeys || []).filter(k => k.id !== id)
-      };
-    });
-  };
-
-  return (
-    <AuthContext.Provider value={{
-      user,
-      login,
-      loginWithDemo,
-      signup,
-      logout,
-      updateUser,
-      addDictation,
-      deleteDictation,
-      addVocabulary,
-      removeVocabulary,
-      toggleActionItem,
-      addApiKey,
-      deleteApiKey
-    }}>
-      {children}
-    </AuthContext.Provider>
+  const login = useCallback(
+    async (email, password) => adopt(await api.login({ email, password })),
+    [adopt],
   );
+
+  const signup = useCallback(
+    async (name, email, password) =>
+      adopt(await api.register({ email, password, displayName: name })),
+    [adopt],
+  );
+
+  const loginWithDemo = useCallback(async () => adopt(await api.demoLogin()), [adopt]);
+
+  const logout = useCallback(() => {
+    api.logout();
+    setUser(null);
+    setSessionNotice('');
+  }, []);
+
+  /**
+   * Called by workspace screens when the backend rejects their credential
+   * mid-session, so the whole app drops to signed-out in one place.
+   */
+  const handleAuthFailure = useCallback(() => {
+    api.clearSession();
+    setUser(null);
+    setSessionNotice('Your session ended. Sign in again to continue.');
+  }, []);
+
+  const value = useMemo(
+    () => ({ user, checking, sessionNotice, login, signup, loginWithDemo, logout, handleAuthFailure }),
+    [user, checking, sessionNotice, login, signup, loginWithDemo, logout, handleAuthFailure],
+  );
+
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 
 export function useAuth() {

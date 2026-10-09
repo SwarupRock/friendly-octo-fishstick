@@ -155,5 +155,7 @@ class ModesResponse(BaseModel):
     stt: ProviderStatusView
     extraction: ProviderStatusView
     seal: dict[str, Any]
+    #: Authentication configuration, never the secret itself.
+    auth: dict[str, Any]
     storage: dict[str, Any]
     database: dict[str, Any]

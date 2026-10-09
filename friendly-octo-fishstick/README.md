@@ -1,4 +1,4 @@
-# Titan — Marketing OS
+# Svarah.ai — Marketing OS
 
 Voice-first marketing system for small businesses with a **Fact Integrity Engine**:
 AI creates the marketing, but code guarantees the facts. Every generated asset
@@ -6,9 +6,10 @@ AI creates the marketing, but code guarantees the facts. Every generated asset
 FactSheet before its owner approves publication.
 
 > **Architecture source of truth:** `TITAN_SOURCE_OF_TRUTH.md`
-> **Progress/evidence:** `IMPLEMENTATION_PLAN.md`
-> **Endpoints & provider registry:** `API_ENDPOINTS.md`
-> **Runbook:** `OPERATIONS.md`
+> **Progress/evidence:** `IMPLEMENTATION_PLAN.md`, `docs/SVARAH_IMPLEMENTATION_STATUS.md`
+> **Endpoints & provider registry:** `API_ENDPOINTS.md`, `docs/SVARAH_API_INTEGRATION.md`
+> **Runbook:** `OPERATIONS.md`, `docs/SVARAH_SETUP_AND_CONFIGURATION.md`
+> **Security:** `docs/SVARAH_SECURITY_AND_DEPLOYMENT.md`
 
 ## Feature map (Phases 1–9)
 
@@ -26,23 +27,28 @@ FactSheet before its owner approves publication.
 ## Quickstart (Windows PowerShell)
 
 ```powershell
-# Backend
+# Backend (from the repository root: friendly-octo-fishstick/)
 cd backend
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
-python -c "import secrets; print(secrets.token_hex(32))"   # use as the seal secret
-$env:TITAN_SEAL_SECRET = "<paste-new-secret>"
-.\.venv\Scripts\python.exe -m pytest                      # 176 tests
+python -c "import secrets; print(secrets.token_urlsafe(48))"   # generate a secret
+# Put the value in ../.env as TITAN_SEAL_SECRET (fact lock) and, separately,
+# as TITAN_AUTH_SECRET (session signing). See .env.example for every knob.
+.\.venv\Scripts\python.exe -m pytest                      # 216 tests
 .\.venv\Scripts\python.exe -m uvicorn app.main:app --reload --port 8000
 
-# Frontend (web)
-cd frontend
+# Frontend (web) — from the repository root
+cd ..\frontend
 npm install
 npm run dev      # http://localhost:5173
 
 # Frontend (mobile, Expo)
 npm run mobile
 ```
+
+Open http://localhost:5173 and use **Demo Login** to enter the workspace with no
+credentials. The full journey — capture → confirm facts → lock → plan → create →
+verify → approve & export — runs offline against mock providers.
 
 `.env.example` documents every knob (providers, budgets, flags). In mock mode
 (default) the system runs fully offline with honestly labelled mocks and

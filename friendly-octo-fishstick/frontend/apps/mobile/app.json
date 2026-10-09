@@ -1,11 +1,11 @@
 {
   "expo": {
-    "name": "mobile",
-    "slug": "mobile",
+    "name": "Svarah.AI",
+    "slug": "svarah-ai",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "mobile",
+    "scheme": "svarah",
     "userInterfaceStyle": "automatic",
     "ios": {
       "icon": "./assets/expo.icon"

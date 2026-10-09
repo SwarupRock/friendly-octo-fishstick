@@ -2,6 +2,11 @@
 
 Environment variables are set *before* the app package is imported so the
 cached settings/engine bind to a throwaway SQLite DB and asset directory.
+
+Authentication note: every owned route requires a signed bearer token, so the
+`client` fixture is pre-authenticated as a single primary account. Tests that
+need to prove *cross-account* isolation use the `other_account` fixture, which
+yields a second real account rather than a client-supplied owner string.
 """
 
 from __future__ import annotations
@@ -18,10 +23,16 @@ os.environ["TITAN_MODE"] = "mock"
 os.environ["TITAN_STT_PROVIDER"] = "auto"
 os.environ["TITAN_EXTRACTION_PROVIDER"] = "auto"
 os.environ["TITAN_SEAL_SECRET"] = "test-seal-secret-do-not-use-in-prod"
+# Set explicitly so tokens stay valid across `reset_settings_cache()` calls;
+# without it mock mode would mint a fresh per-process key each rebuild.
+os.environ["TITAN_AUTH_SECRET"] = "test-auth-secret-do-not-use-in-prod"
 os.environ["TITAN_DATABASE_URL"] = f"sqlite:///{(_TMP / 'test.db').as_posix()}"
 os.environ["TITAN_ASSETS_DIR"] = str(_TMP / "assets")
 os.environ.pop("TITAN_AGNES_API_BASE", None)
 os.environ.pop("TITAN_AGNES_API_KEY", None)
+
+PRIMARY_EMAIL = "primary@titan.test"
+OTHER_EMAIL = "other@titan.test"
 
 
 @pytest.fixture(scope="session")
@@ -34,16 +45,62 @@ def client():
         yield test_client
 
 
+def _create_account(email: str, display_name: str) -> str:
+    """Insert an account directly and return its bearer token.
+
+    Going through the model rather than `POST /auth/register` keeps the fixture
+    usable for tests that are not about registration, and keeps the owner UID
+    deterministic (it is derived from the email, not the row id).
+    """
+    from app.config import get_settings
+    from app.db import get_session_factory
+    from app.models import User
+    from app.security import mint_token, owner_uid_for_email
+
+    uid = owner_uid_for_email(email)
+    with get_session_factory()() as session:
+        existing = session.query(User).filter(User.owner_uid == uid).one_or_none()
+        if existing is None:
+            session.add(
+                User(
+                    owner_uid=uid,
+                    email=email,
+                    display_name=display_name,
+                    password_hash=None,
+                    is_demo=True,
+                )
+            )
+            session.commit()
+    token, _ = mint_token(uid=uid, email=email, settings=get_settings())
+    return token
+
+
 @pytest.fixture(autouse=True)
 def _clean_db(client):
-    """Truncate all tables before each test for isolation."""
+    """Truncate all tables before each test, then re-seed the primary account."""
     from app.db import Base, get_session_factory
 
     with get_session_factory()() as session:
         for table in reversed(Base.metadata.sorted_tables):
             session.execute(table.delete())
         session.commit()
+
+    token = _create_account(PRIMARY_EMAIL, "Primary Shop")
+    client.headers["Authorization"] = f"Bearer {token}"
     yield
+
+
+@pytest.fixture
+def other_account(client):
+    """Headers for a second, unrelated account (for isolation tests)."""
+    token = _create_account(OTHER_EMAIL, "Other Shop")
+    return {"Authorization": f"Bearer {token}"}
+
+
+@pytest.fixture
+def anonymous(client):
+    """Headers with no credential at all."""
+    return {"Authorization": ""}
 
 
 @pytest.fixture

@@ -45,12 +45,11 @@ def test_profile_requires_consent(client):
     assert response.json()["error"]["code"] == "consent_required"
 
 
-def test_profile_create_mock_reuses_voice_id(client):
+def test_profile_create_mock_reuses_voice_id(client, other_account):
     audio = _wav_b64()
     response = client.post(
         "/api/voice-profiles",
         json={
-            "owner_uid": "owner-1",
             "display_name": "Shopkeeper",
             "consent_confirmed": True,
             "consent_record": {"source": "in_app_recording", "language": "en-IN"},
@@ -65,11 +64,17 @@ def test_profile_create_mock_reuses_voice_id(client):
     assert profile["provider_voice_id"] and profile["provider_voice_id"].startswith("mock-voice-")
     assert profile["consent_confirmed"] is True
 
-    # Listed only for its owner.
-    mine = client.get("/api/voice-profiles", params={"owner_uid": "owner-1"}).json()
+    # Listed only for its owner — scoped by the authenticated account, not by
+    # any identifier the caller supplies.
+    mine = client.get("/api/voice-profiles").json()
     assert len(mine) == 1
-    other = client.get("/api/voice-profiles", params={"owner_uid": "someone-else"}).json()
+    other = client.get("/api/voice-profiles", headers=other_account).json()
     assert other == []
+
+    # And the second account cannot read it by id either.
+    assert client.get(
+        f"/api/voice-profiles/{profile['id']}", headers=other_account
+    ).status_code == 404
 
 
 def test_localized_voice_generation_provenance(client):
@@ -106,19 +111,41 @@ def test_localized_voice_generation_provenance(client):
     assert "{{" not in asset["text_content"]
 
 
-def test_voice_ownership_enforced(client):
+def test_voice_ownership_enforced(client, other_account):
+    """A second account can neither use the profile nor reach the campaign."""
     campaign_id = _setup_campaign(client)
     profile = client.post(
         "/api/voice-profiles",
-        json={"owner_uid": "owner-1", "display_name": "A", "consent_confirmed": True},
+        json={"display_name": "A", "consent_confirmed": True},
     ).json()
+
+    # The campaign itself is invisible to the other account.
     response = client.post(
         f"/api/campaigns/{campaign_id}/voice",
-        json={"profile_id": profile["id"], "owner_uid": "intruder", "language": "English"},
+        json={"profile_id": profile["id"], "language": "English"},
+        headers=other_account,
     )
-    assert response.status_code == 404  # not the intruder's profile
+    assert response.status_code == 404, response.text
 
     # Cross-owner generation must produce no asset.
+    listed = client.get(f"/api/campaigns/{campaign_id}/assets").json()
+    assert all(a["kind"] != "voice" for a in listed)
+
+
+def test_voice_profile_of_another_account_is_unusable(client, other_account):
+    """Owning the campaign is not enough: the profile must be yours too."""
+    campaign_id = _setup_campaign(client)
+    foreign_profile = client.post(
+        "/api/voice-profiles",
+        json={"display_name": "Not yours", "consent_confirmed": True},
+        headers=other_account,
+    ).json()
+
+    response = client.post(
+        f"/api/campaigns/{campaign_id}/voice",
+        json={"profile_id": foreign_profile["id"], "language": "English"},
+    )
+    assert response.status_code == 404, response.text
     listed = client.get(f"/api/campaigns/{campaign_id}/assets").json()
     assert all(a["kind"] != "voice" for a in listed)
 

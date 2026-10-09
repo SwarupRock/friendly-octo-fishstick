@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from ..config import Settings, get_settings
 from ..db import get_db
+from ..deps import current_user, owned_campaign
 from ..errors import (
     ConflictError,
     ExtractionUnavailableError,
@@ -32,6 +33,7 @@ from ..models import (
     FactSheetStatus,
     InputType,
     Shop,
+    User,
 )
 from ..schemas import (
     AuditEventView,
@@ -60,20 +62,33 @@ DEFAULT_SHOP_NAME = "Demo Shop"
 
 
 # ── helpers ────────────────────────────────────────────────────────────
-def _ensure_default_shop(db: Session) -> Shop:
-    shop = db.scalar(select(Shop).order_by(Shop.id).limit(1))
+def _ensure_default_shop(db: Session, user: User) -> Shop:
+    """The caller's own default shop, created on first use.
+
+    Scoped by owner: two accounts never share the shop row that their
+    campaigns hang off, even though both are called "Demo Shop".
+    """
+    shop = db.scalar(
+        select(Shop).where(Shop.owner_uid == user.owner_uid).order_by(Shop.id).limit(1)
+    )
     if shop is None:
-        shop = Shop(name=DEFAULT_SHOP_NAME, locale="en")
+        shop = Shop(
+            name=user.display_name or DEFAULT_SHOP_NAME,
+            locale="en",
+            owner_uid=user.owner_uid,
+        )
         db.add(shop)
         db.flush()
     return shop
 
 
-def _resolve_shop(db: Session, shop_id: int | None) -> Shop:
+def _resolve_shop(db: Session, shop_id: int | None, user: User) -> Shop:
     if shop_id is None:
-        return _ensure_default_shop(db)
+        return _ensure_default_shop(db, user)
     shop = db.get(Shop, shop_id)
-    if shop is None:
+    # A shop belonging to another account is reported as missing, not
+    # forbidden, so ids cannot be probed for existence.
+    if shop is None or shop.owner_uid != user.owner_uid:
         raise NotFoundError(f"Shop {shop_id} was not found.", details={"shop_id": shop_id})
     return shop
 
@@ -235,12 +250,16 @@ async def _run_extraction(
 # ── routes ─────────────────────────────────────────────────────────────
 @router.post("", status_code=status.HTTP_201_CREATED, response_model=CampaignRead)
 async def create_campaign(
-    payload: CampaignCreate, db: Session = Depends(get_db)
+    payload: CampaignCreate,
+    db: Session = Depends(get_db),
+    user: User = Depends(current_user),
 ) -> CampaignRead:
     settings = get_settings()
-    shop = _resolve_shop(db, payload.shop_id)
+    shop = _resolve_shop(db, payload.shop_id, user)
 
-    campaign = Campaign(shop_id=shop.id, status=CampaignStatus.CAPTURED)
+    campaign = Campaign(
+        shop_id=shop.id, owner_uid=user.owner_uid, status=CampaignStatus.CAPTURED
+    )
     db.add(campaign)
     db.flush()
     _record_audit(db, campaign, "campaign.created", {"shop_id": shop.id})
@@ -327,9 +346,16 @@ async def create_campaign(
 
 @router.get("", response_model=list[CampaignSummary])
 def list_campaigns(
-    db: Session = Depends(get_db), limit: int = Query(default=50, ge=1, le=200)
+    db: Session = Depends(get_db),
+    user: User = Depends(current_user),
+    limit: int = Query(default=50, ge=1, le=200),
 ) -> list[CampaignSummary]:
-    rows = db.scalars(select(Campaign).order_by(Campaign.id.desc()).limit(limit)).all()
+    rows = db.scalars(
+        select(Campaign)
+        .where(Campaign.owner_uid == user.owner_uid)
+        .order_by(Campaign.id.desc())
+        .limit(limit)
+    ).all()
     return [
         CampaignSummary(
             id=c.id,
@@ -345,27 +371,23 @@ def list_campaigns(
 
 
 @router.get("/{campaign_id}", response_model=CampaignRead)
-def get_campaign(campaign_id: int, db: Session = Depends(get_db)) -> CampaignRead:
-    campaign = db.get(Campaign, campaign_id)
-    if campaign is None:
-        raise NotFoundError(
-            f"Campaign {campaign_id} was not found.",
-            details={"campaign_id": campaign_id},
-        )
+def get_campaign(
+    campaign_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(current_user),
+) -> CampaignRead:
+    campaign = owned_campaign(db, campaign_id, user)
     return _serialize(db, campaign)
 
 
 @router.post("/{campaign_id}/extract", response_model=CampaignRead)
 async def extract_campaign_facts(
-    campaign_id: int, db: Session = Depends(get_db)
+    campaign_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(current_user),
 ) -> CampaignRead:
     """Re-run fact extraction on the stored transcript (transcription stays separate)."""
-    campaign = db.get(Campaign, campaign_id)
-    if campaign is None:
-        raise NotFoundError(
-            f"Campaign {campaign_id} was not found.",
-            details={"campaign_id": campaign_id},
-        )
+    campaign = owned_campaign(db, campaign_id, user)
     if not campaign.transcript:
         raise ValidationError(
             "Cannot extract facts: the campaign has no transcript. "

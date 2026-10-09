@@ -67,9 +67,28 @@ def modes() -> ModesResponse:
                 else "Fact locking is disabled: set TITAN_SEAL_SECRET."
             ),
         },
+        auth={
+            "configured": settings.auth_configured,
+            "production_ready": settings.auth_production_ready,
+            "ephemeral_signing_key": settings.auth_secret_ephemeral,
+            "demo_login_enabled": settings.demo_login_enabled,
+            "token_ttl_hours": settings.auth_token_ttl_hours,
+            "detail": _auth_detail(settings),
+        },
         storage=storage_stats,
         database={"status": db_status, "error": db_error, "url": _safe_db_url(settings.database_url)},
     )
+
+
+def _auth_detail(settings) -> str:
+    if not settings.auth_configured:
+        return "Authentication is unavailable: set TITAN_AUTH_SECRET."
+    if settings.auth_secret_ephemeral:
+        return (
+            "Signing sessions with a per-process key: tokens are unforgeable but "
+            "end at the next backend restart. Set TITAN_AUTH_SECRET to persist them."
+        )
+    return "Session signing is configured with a durable key."
 
 
 def _safe_db_url(url: str) -> str:
