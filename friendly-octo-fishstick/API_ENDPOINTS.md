@@ -42,9 +42,9 @@ Status vocabulary (handoff §8):
 | `GET /campaigns/{id}/certificate/html` | none (dev) | Readable HTML certificate | |
 | `POST /demo/sabotage/{asset_id}` | flag+owner (dev) | Sabotage demo on a COPY | requires `TITAN_ENABLE_DEMO_SABOTAGE=true` AND mock mode; original untouched |
 | `GET /campaigns/{id}/publish/capabilities` | none (dev) | Discover connectors/actions | only organic writes |
-| `POST /campaigns/{id}/publish/prepare` | owner_uid (dev) | Bind asset+caption→destination | schema-validated |
-| `POST /campaigns/publish/{id}/approve` | none (dev) | Explicit owner approval | binds caption hash + asset hashes |
-| `POST /campaigns/publish/{id}/execute` | none (dev) | Execute approved publication | mock mode: only sandbox (+wa.me); real posts need live config |
+| `POST /campaigns/{id}/publish/prepare` | owner_uid (dev) | Bind asset+caption→destination | schema-validated; server-side gate: only `verified`/`human_verified` assets accepted → 409 `asset_not_verified`; superseded facts → `asset_stale` |
+| `POST /campaigns/publish/{id}/approve` | none (dev) | Explicit owner approval | binds caption hash + asset hashes; re-checks asset verification → 409 `asset_not_verified`/`asset_stale` |
+| `POST /campaigns/publish/{id}/execute` | none (dev) | Execute approved publication | re-checks eligibility at execution time (→ 409 `approval_stale` if caption/artifact changed after approval); mock mode: only sandbox (+wa.me), real posts → 409 `mock_publish_blocked` |
 | `GET /campaigns/{id}/publish/export` | none (dev) | Manual-ready export bundle | |
 
 ## Live-verification procedure (to move a row to LIVE_VERIFIED)

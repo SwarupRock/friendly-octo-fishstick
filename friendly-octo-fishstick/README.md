@@ -35,10 +35,13 @@ $env:TITAN_SEAL_SECRET = "<paste-new-secret>"
 .\.venv\Scripts\python.exe -m pytest                      # 176 tests
 .\.venv\Scripts\python.exe -m uvicorn app.main:app --reload --port 8000
 
-# Frontend
+# Frontend (web)
 cd frontend
 npm install
 npm run dev      # http://localhost:5173
+
+# Frontend (mobile, Expo)
+npm run mobile
 ```
 
 `.env.example` documents every knob (providers, budgets, flags). In mock mode
