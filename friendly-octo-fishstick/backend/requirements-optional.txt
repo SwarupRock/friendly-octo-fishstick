@@ -1,0 +1,4 @@
+# Optional, lazy-loaded local STT fallback (Source of Truth §7).
+# Not required for the application to start or for typed-input operation.
+# Install with: pip install -r requirements-optional.txt
+faster-whisper>=1.0,<2.0
