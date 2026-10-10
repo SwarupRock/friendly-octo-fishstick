@@ -98,6 +98,8 @@ class User(Base):
     display_name: Mapped[str] = mapped_column(String(128), nullable=False)
     #: Null for a demo account created by the mock-mode password-less sign-in.
     password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    #: E.164 number for an account created by phone sign-in; null otherwise.
+    phone: Mapped[str | None] = mapped_column(String(32), nullable=True)
     is_demo: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utcnow

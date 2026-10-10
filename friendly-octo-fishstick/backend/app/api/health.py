@@ -72,6 +72,8 @@ def modes() -> ModesResponse:
             "production_ready": settings.auth_production_ready,
             "ephemeral_signing_key": settings.auth_secret_ephemeral,
             "demo_login_enabled": settings.demo_login_enabled,
+            "phone_login_enabled": settings.phone_login_enabled,
+            "google_login_enabled": settings.google_login_enabled,
             "token_ttl_hours": settings.auth_token_ttl_hours,
             "detail": _auth_detail(settings),
         },

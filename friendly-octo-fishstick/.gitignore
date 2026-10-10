@@ -33,3 +33,6 @@ frontend/.vite/
 Thumbs.db
 .idea/
 .vscode/
+.claude/
+.freebuff/
+*.log

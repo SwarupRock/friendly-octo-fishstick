@@ -157,6 +157,9 @@ class Settings:
     auth_secret_ephemeral: bool
     auth_token_ttl_hours: int
     allow_demo_login: bool
+    #: Firebase Web API key of the project whose phone and Google sign-ins are accepted.
+    #: Identifies the project to Google; it is not a credential by itself.
+    firebase_api_key: str | None
     max_request_bytes: int
     app_version: str = APP_VERSION
 
@@ -187,6 +190,16 @@ class Settings:
     def demo_login_enabled(self) -> bool:
         """Password-less demo sign-in — mock mode only, never in live mode."""
         return self.is_mock and self.allow_demo_login
+
+    @property
+    def phone_login_enabled(self) -> bool:
+        """Phone sign-in needs a Firebase project to verify against and a key to sign sessions."""
+        return bool(self.firebase_api_key) and self.auth_configured
+
+    @property
+    def google_login_enabled(self) -> bool:
+        """Google sign-in is verified through the same Firebase project as phone sign-in."""
+        return self.phone_login_enabled
 
     @property
     def max_audio_bytes(self) -> int:
@@ -322,8 +335,9 @@ def _build_settings() -> Settings:
         seal_secret=_env("TITAN_SEAL_SECRET"),
         auth_secret=auth_secret,
         auth_secret_ephemeral=auth_secret_ephemeral,
-        auth_token_ttl_hours=_env_int("TITAN_AUTH_TOKEN_TTL_HOURS", 72),
+        auth_token_ttl_hours=_env_int("TITAN_AUTH_TOKEN_TTL_HOURS", 8760),
         allow_demo_login=(_env("TITAN_ALLOW_DEMO_LOGIN", "true") or "true").lower() != "false",
+        firebase_api_key=_env_secret("TITAN_FIREBASE_API_KEY"),
         max_request_bytes=_env_int("TITAN_MAX_REQUEST_BYTES", 32 * 1024 * 1024),
     )
 

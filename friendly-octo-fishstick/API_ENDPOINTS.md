@@ -14,6 +14,7 @@ Status vocabulary (handoff §8):
 | Sarvam Bulbul TTS | `IMPLEMENTED_AND_LIVE_VERIFIED` | `POST /text-to-speech` JSON `text` (≤2500 chars), `language_code`, `speaker`, `model: bulbul:v3`, `output_audio_codec: wav`; response `audios[0]` (base64 WAV). Live run 2026-10-09: English and Hindi speech generated and stored as voice assets. |
 | Sarvam voice cloning | `IMPLEMENTED_NOT_LIVE_VERIFIED` | `POST /voices/create` → persist `voice_id`; `POST /voices/clone` (text ≤1000 chars, sentence-split chunking); base64 audio decode + WAV probe. Mocks labelled `mock_cloned_voice`. No live clone has been run yet. |
 | Windsor.ai MCP | `IMPLEMENTED_NOT_LIVE_VERIFIED` | Streamable HTTP JSON-RPC `tools/call` (`get_current_user`, `get_connectors`, `list_actions`, `execute_action`). Mock mode never calls social endpoints. Only organic writes. Docs to re-verify: `https://mcp.windsor.ai/llms-full.txt`. |
+| Firebase phone sign-in | `IMPLEMENTED_NOT_LIVE_VERIFIED` | Website: `signInWithPhoneNumber` + invisible reCAPTCHA (`VITE_FIREBASE_*`). Backend: `POST https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=…` with the ID token (`TITAN_FIREBASE_API_KEY`). Covered by `tests/test_phone_login.py` with the Google call stubbed; no real SMS has been sent yet. |
 | Firebase Auth/Firestore/Storage | `UNAVAILABLE` (release blocker) | Not implemented. Production data layer is SQLAlchemy/SQLite + filesystem storage, per source-of-truth §61 (kept for the hackathon). Handoff §1 marks Firebase as blocking prerequisite for a production release — see OPERATIONS.md "Release blockers". |
 | faster-whisper | `UNSUPPORTED` as a fallback | Sarvam is the only speech provider. The legacy class is used only if an operator sets `TITAN_STT_PROVIDER=faster-whisper` explicitly; `auto` never selects it. |
 
@@ -22,6 +23,7 @@ Status vocabulary (handoff §8):
 | Method & path | Auth | Description | Limits/state |
 | --- | --- | --- | --- |
 | `GET /health`, `GET /modes` | none | Health; provider/fallback status | truthful labels |
+| `POST /auth/phone` | none | Phone sign-in. Body `{id_token, display_name?}`: a Firebase ID token from a confirmed SMS code, verified with Google (`accounts:lookup`) and exchanged for a normal session; the first sign-in creates the account | needs `TITAN_FIREBASE_API_KEY` (503 `phone_login_unavailable` otherwise); bad/expired token → 401 `phone_token_invalid`; a token with no phone number → 401 `phone_not_verified` |
 | `POST /campaigns` | owner | Typed text or base64 audio → STT → extraction | audio ≤25 MB; auto-extract; graceful manual-entry fallback |
 | `GET /campaigns`, `GET /campaigns/{id}` | owner | List/detail with factsheet + audit | limit ≤200 |
 | `POST /campaigns/{id}/extract` | owner | Re-extract (409 if locked) | |

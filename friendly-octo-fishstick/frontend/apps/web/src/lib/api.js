@@ -228,9 +228,46 @@ export async function login({ email, password }) {
   return adoptSession(payload);
 }
 
+/**
+ * Exchange a Firebase ID token (from a confirmed SMS code) for a Svarah
+ * session. The first sign-in from a number creates its account.
+ */
+export async function phoneLogin({ idToken, displayName } = {}) {
+  const payload = await request('/auth/phone', {
+    method: 'POST',
+    auth: false,
+    timeoutMs: 30_000, // the backend verifies the token with Google
+    body: { id_token: idToken, ...(displayName ? { display_name: displayName } : {}) },
+  });
+  return adoptSession(payload);
+}
+
+/**
+ * Exchange a Firebase ID token (from Google's sign-in window) for a Svarah
+ * session. The first sign-in from a Google account creates its account.
+ */
+export async function googleLogin({ idToken } = {}) {
+  const payload = await request('/auth/google', {
+    method: 'POST',
+    auth: false,
+    timeoutMs: 30_000, // the backend verifies the token with Google
+    body: { id_token: idToken },
+  });
+  return adoptSession(payload);
+}
+
 /** Password-less sign-in. Available only while the backend runs in mock mode. */
 export async function demoLogin() {
   const payload = await request('/auth/demo', { method: 'POST', auth: false, body: {} });
+  return adoptSession(payload);
+}
+
+/**
+ * Swap the stored session for a fresh one, pushing its expiry forward. Called
+ * on every visit, so a signed-in owner stays signed in until they sign out.
+ */
+export async function refreshSession(signal) {
+  const payload = await request('/auth/refresh', { method: 'POST', signal });
   return adoptSession(payload);
 }
 

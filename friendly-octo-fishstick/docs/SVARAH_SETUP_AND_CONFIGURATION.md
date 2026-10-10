@@ -72,7 +72,7 @@ Documented in `.env.example`. Names only — never commit values.
 | --- | --- |
 | `TITAN_SEAL_SECRET` | HMAC-SHA256 key for the fact lock and certificate. Empty → locking refused. |
 | `TITAN_AUTH_SECRET` | Signs session tokens. Empty → mock mints a per-process key (sessions end on restart); live refuses to issue sessions. |
-| `TITAN_AUTH_TOKEN_TTL_HOURS` | Session lifetime (default 72). |
+| `TITAN_AUTH_TOKEN_TTL_HOURS` | Session lifetime (default 8760 = one year). The website renews the session on every visit (`POST /api/auth/refresh`), so an owner stays signed in until they sign out. |
 | `TITAN_ALLOW_DEMO_LOGIN` | Mock-mode password-less demo sign-in. Ignored in live mode. |
 | `TITAN_MAX_REQUEST_BYTES` | Body ceiling before parsing (default 32 MiB). |
 

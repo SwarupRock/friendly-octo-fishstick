@@ -14,6 +14,10 @@ const API_PROXY = {
 export default defineConfig({
   plugins: [react()],
   server: {
+    // Listen on IPv4 so the site answers on http://127.0.0.1:5173 as well as
+    // http://localhost:5173 — Firebase phone sign-in rejects real numbers
+    // from "localhost".
+    host: "127.0.0.1",
     port: 5173,
     proxy: API_PROXY,
   },

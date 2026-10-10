@@ -74,6 +74,7 @@ def init_db() -> None:
 _ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("shops", "owner_uid", "VARCHAR(128)"),
     ("campaigns", "owner_uid", "VARCHAR(128)"),
+    ("users", "phone", "VARCHAR(32)"),
 )
 
 

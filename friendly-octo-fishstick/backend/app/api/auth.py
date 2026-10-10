@@ -1,8 +1,9 @@
 """Authentication endpoints.
 
-A deliberately small surface: register, sign in, read the current account, and
-— in mock mode only — a password-less demo sign-in so the local demo needs no
-credentials. There is no password-reset or email-verification flow; see
+A deliberately small surface: register, sign in (by password, or by a phone
+number or Google account that Firebase verified), read the current account, and — in mock mode
+only — a password-less demo sign-in so the local demo needs no credentials.
+There is no password-reset or email-verification flow; see
 `docs/SVARAH_SECURITY_AND_DEPLOYMENT.md` for what a production deployment still
 has to add.
 """
@@ -30,11 +31,17 @@ from ..security import (
     owner_uid_for_email,
     verify_password,
 )
+from ..services.firebase_auth import verify_google_id_token, verify_phone_id_token
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 DEMO_EMAIL = "demo@svarah.local"
 DEMO_NAME = "Demo Shopkeeper"
+
+#: `users.email` is required and unique, so an account created by phone
+#: sign-in gets a placeholder under this reserved (never-resolvable) domain.
+#: Registration refuses the domain, so the placeholder cannot be squatted.
+PHONE_EMAIL_DOMAIN = "phone.svarah.invalid"
 
 
 #: Deliberately permissive: enough structure to catch a typo, without pulling
@@ -63,11 +70,24 @@ class LoginRequest(_EmailMixin):
     password: str = Field(min_length=1, max_length=256)
 
 
+class PhoneLoginRequest(BaseModel):
+    #: The Firebase ID token the browser received after the SMS code was confirmed.
+    id_token: str = Field(min_length=20, max_length=8192)
+    display_name: str | None = Field(default=None, max_length=128)
+
+
+class GoogleLoginRequest(BaseModel):
+    #: The Firebase ID token the browser received from Google's sign-in window.
+    id_token: str = Field(min_length=20, max_length=8192)
+
+
 class AccountView(BaseModel):
     owner_uid: str
     email: str
     display_name: str
     is_demo: bool
+    #: Set for accounts that sign in by phone; `email` is then a placeholder.
+    phone: str | None = None
 
 
 class SessionView(BaseModel):
@@ -85,6 +105,7 @@ def _account(user: User) -> AccountView:
         email=user.email,
         display_name=user.display_name,
         is_demo=user.is_demo,
+        phone=user.phone,
     )
 
 
@@ -108,6 +129,8 @@ def register(payload: RegisterRequest, db: Session = Depends(get_db)) -> Session
             details={"configured": False},
         )
     email = normalize_email(str(payload.email))
+    if email.endswith(f"@{PHONE_EMAIL_DOMAIN}"):
+        raise ValidationError("Enter a valid email address.", code="email_reserved")
     if db.scalar(select(User).where(User.email == email)) is not None:
         raise ConflictError(
             "An account already exists for this email.", code="email_taken"
@@ -143,6 +166,74 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)) -> SessionView:
     return _session(user)
 
 
+@router.post("/phone", response_model=SessionView)
+def phone_login(payload: PhoneLoginRequest, db: Session = Depends(get_db)) -> SessionView:
+    """Sign in with a phone number that Firebase has verified by SMS.
+
+    The first sign-in from a number creates its account; later ones return the
+    same account. The owner UID comes from the Firebase account id, so it stays
+    stable even if the owner later changes their number in Firebase.
+    """
+    settings = get_settings()
+    if not settings.auth_configured:
+        raise AuthUnavailableError(
+            "Authentication is not configured: set TITAN_AUTH_SECRET.",
+            details={"configured": False},
+        )
+    identity = verify_phone_id_token(payload.id_token, settings)
+    owner_uid = f"fb_{identity.uid}"
+    user = db.scalar(select(User).where(User.owner_uid == owner_uid))
+    if user is None:
+        user = User(
+            owner_uid=owner_uid,
+            email=f"{identity.phone.lstrip('+')}@{PHONE_EMAIL_DOMAIN}",
+            display_name=(payload.display_name or "").strip() or identity.phone,
+            password_hash=None,
+            phone=identity.phone,
+            is_demo=False,
+        )
+        db.add(user)
+    else:
+        user.phone = identity.phone
+    user.last_login_at = utcnow()
+    db.commit()
+    return _session(user)
+
+
+@router.post("/google", response_model=SessionView)
+def google_login(payload: GoogleLoginRequest, db: Session = Depends(get_db)) -> SessionView:
+    """Sign in with a Google account that Firebase has verified.
+
+    The first sign-in creates the account. An account that already exists for
+    the same email address (Google has verified the address) is reused, so the
+    owner keeps their campaigns.
+    """
+    settings = get_settings()
+    if not settings.auth_configured:
+        raise AuthUnavailableError(
+            "Authentication is not configured: set TITAN_AUTH_SECRET.",
+            details={"configured": False},
+        )
+    identity = verify_google_id_token(payload.id_token, settings)
+    email = normalize_email(identity.email)
+    owner_uid = f"fb_{identity.uid}"
+    user = db.scalar(select(User).where(User.owner_uid == owner_uid))
+    if user is None:
+        user = db.scalar(select(User).where(User.email == email))
+    if user is None:
+        user = User(
+            owner_uid=owner_uid,
+            email=email,
+            display_name=identity.name or email.split("@", 1)[0],
+            password_hash=None,
+            is_demo=False,
+        )
+        db.add(user)
+    user.last_login_at = utcnow()
+    db.commit()
+    return _session(user)
+
+
 @router.post("/demo", response_model=SessionView)
 def demo_login(db: Session = Depends(get_db)) -> SessionView:
     """Password-less sign-in for the offline demo. Mock mode only.
@@ -170,6 +261,17 @@ def demo_login(db: Session = Depends(get_db)) -> SessionView:
         db.add(user)
     user.last_login_at = utcnow()
     db.commit()
+    return _session(user)
+
+
+@router.post("/refresh", response_model=SessionView)
+def refresh(user: User = Depends(current_user)) -> SessionView:
+    """Trade a still-valid session for a fresh one.
+
+    The website calls this each time it opens, so a session keeps sliding
+    forward and only ends when the owner signs out (or stays away for the
+    whole of `TITAN_AUTH_TOKEN_TTL_HOURS`).
+    """
     return _session(user)
 
 

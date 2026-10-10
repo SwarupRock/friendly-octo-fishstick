@@ -1,20 +1,27 @@
 import React, { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { ArrowRight, Lock, Mail, CheckCircle2, ShieldCheck, Zap } from 'lucide-react';
+import { ArrowRight, ShieldCheck, Zap } from 'lucide-react';
 import { useAuth } from './AuthContext';
 import { errorMessage, getModes } from './lib/api';
+import AuthMethodTabs, { useFirebaseLoginStatus } from './AuthMethodTabs';
+import GoogleLogin from './GoogleLogin';
+import PhoneLogin from './PhoneLogin';
 import ThemeToggle from './ThemeToggle';
 import Wordmark from './Wordmark.jsx';
 import './auth.css';
 
 export default function Login() {
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [remember, setRemember] = useState(true);
   const [loading, setLoading] = useState(false);
   const [toast, setToast] = useState('');
-  const { login, loginWithDemo } = useAuth();
+  const [method, setMethod] = useState('google');
+  const firebaseStatus = useFirebaseLoginStatus();
+  const { user, checking, loginWithDemo } = useAuth();
   const navigate = useNavigate();
+
+  // Someone who is already signed in has no use for this page.
+  useEffect(() => {
+    if (!checking && user) navigate('/workspace', { replace: true });
+  }, [checking, user, navigate]);
 
   // The password-less demo sign-in exists only in mock mode. Ask the backend
   // rather than guessing, so a live deployment never shows an affordance the
@@ -27,25 +34,6 @@ export default function Login() {
       .catch(() => setDemoEnabled(false));
     return () => controller.abort();
   }, []);
-
-  const handleLogin = async (e) => {
-    e.preventDefault();
-    if (!email || !password) {
-      setToast('Please enter your email and password.');
-      setTimeout(() => setToast(''), 3000);
-      return;
-    }
-    setLoading(true);
-    setToast('');
-    try {
-      await login(email, password);
-      navigate('/workspace');
-    } catch (error) {
-      setToast(errorMessage(error));
-    } finally {
-      setLoading(false);
-    }
-  };
 
   const handleDemoLogin = async () => {
     setLoading(true);
@@ -64,7 +52,7 @@ export default function Login() {
     <div className="auth-page">
       <ThemeToggle />
       <div className="auth-ambient-glow" />
-      
+
       <div className="auth-card-wrap">
         <div className="auth-card">
           <div className="auth-header">
@@ -100,68 +88,15 @@ export default function Login() {
             </div>
           ) : null}
 
-          <div className="auth-divider">
-            <span>{demoEnabled ? 'OR CONTINUE WITH EMAIL' : 'CONTINUE WITH EMAIL'}</span>
-          </div>
+          <AuthMethodTabs method={method} onChange={setMethod} />
 
-          <form onSubmit={handleLogin} className="auth-form">
-            <div className="form-group">
-              <label htmlFor="login-email">Email Address</label>
-              <div className="input-wrap">
-                <Mail size={16} className="input-icon"/>
-                <input 
-                  id="login-email"
-                  type="email" 
-                  placeholder="alex.rivera@svarah.ai"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  required
-                />
-              </div>
-            </div>
-
-            <div className="form-group">
-              <div className="label-row">
-                <label htmlFor="login-password">Password</label>
-                <button
-                  type="button"
-                  className="link-btn"
-                  onClick={() => {
-                    setToast('Password reset is not available yet — use Demo Login, or create a new account.');
-                    setTimeout(() => setToast(''), 4500);
-                  }}
-                >
-                  Forgot password?
-                </button>
-              </div>
-              <div className="input-wrap">
-                <Lock size={16} className="input-icon"/>
-                <input 
-                  id="login-password"
-                  type="password" 
-                  placeholder="••••••••••••"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  required
-                />
-              </div>
-            </div>
-
-            <div className="form-row-between">
-              <label className="checkbox-label">
-                <input 
-                  type="checkbox" 
-                  checked={remember}
-                  onChange={(e) => setRemember(e.target.checked)}
-                />
-                <span>Remember me for 30 days</span>
-              </label>
-            </div>
-
-            <button type="submit" className="button button-auth-primary" disabled={loading}>
-              {loading ? 'Signing in...' : <>Sign in to Svarah.AI <ArrowRight size={16}/></>}
-            </button>
-          </form>
+          {!firebaseStatus.ready ? (
+            <p className="phone-unavailable">{firebaseStatus.message}</p>
+          ) : method === 'phone' ? (
+            <PhoneLogin onSignedIn={() => navigate('/workspace')} />
+          ) : (
+            <GoogleLogin onSignedIn={() => navigate('/workspace')} />
+          )}
 
           <div className="auth-footer">
             <p>Don't have an account yet? <Link to="/signup">Sign up for free</Link></p>

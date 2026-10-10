@@ -116,7 +116,7 @@ export default function Workspace() {
           <span className="ws-avatar">{user.avatar}</span>
           <span className="ws-account-meta">
             <b>{user.name}</b>
-            <small>{user.isDemo ? 'Demo account' : user.email}</small>
+            <small>{user.isDemo ? 'Demo account' : user.email || user.phone}</small>
           </span>
           <button
             type="button"

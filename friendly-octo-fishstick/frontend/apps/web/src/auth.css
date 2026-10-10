@@ -195,6 +195,105 @@
   color: var(--wf-dark-muted-alt);
 }
 
+/* Email / Phone switch above the sign-in form. */
+.auth-methods {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  padding: 4px;
+  margin: 20px 0;
+  background: var(--wf-dark-surface);
+  border: 1px solid var(--wf-dark-border-strong);
+  border-radius: 14px;
+}
+
+.auth-method {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 38px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--wf-dark-muted);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.2s, color 0.2s;
+}
+
+.auth-method:hover { color: var(--wf-dark-text); }
+
+.auth-method.is-on {
+  background: var(--wf-lime);
+  color: #171814;
+}
+
+.auth-method:focus-visible {
+  outline: 2px solid var(--wf-lime-text, var(--wf-lime));
+  outline-offset: 2px;
+}
+
+.button-google {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 48px;
+  border: 1px solid var(--wf-dark-border-strong);
+  border-radius: 12px;
+  background: #fff;
+  color: #1f1f1f;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.button-google:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.18);
+}
+
+.button-google:disabled { opacity: 0.7; cursor: default; }
+
+.phone-row {
+  display: grid;
+  grid-template-columns: 104px 1fr;
+  gap: 8px;
+}
+
+.phone-country.auth-select { padding: 12px 10px; }
+
+.phone-hint {
+  font-size: 11px;
+  color: var(--wf-dark-muted-alt);
+}
+
+.input-wrap input.phone-code-input {
+  font: 600 18px 'DM Mono', monospace;
+  letter-spacing: 8px;
+}
+
+.phone-unavailable {
+  margin: 0;
+  padding: 14px;
+  border: 1px dashed var(--wf-dark-border-strong);
+  border-radius: 12px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--wf-dark-muted);
+  text-align: center;
+}
+
+.link-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+  text-decoration: none;
+}
+
 .auth-form {
   display: flex;
   flex-direction: column;

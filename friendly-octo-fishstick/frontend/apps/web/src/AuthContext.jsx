@@ -25,9 +25,12 @@ function toUser(account) {
   if (!account) return null;
   return {
     ownerUid: account.owner_uid,
-    email: account.email,
-    name: account.display_name || account.email,
-    avatar: initialsFor(account.display_name || account.email),
+    // A phone account's email is a backend placeholder, never shown.
+    email: account.phone ? '' : account.email,
+    phone: account.phone || '',
+    name: account.display_name || account.phone || account.email,
+    // A phone number has no initials; the generic mark is used instead.
+    avatar: initialsFor(account.phone && account.display_name === account.phone ? '' : account.display_name || account.email),
     isDemo: Boolean(account.is_demo),
   };
 }
@@ -57,22 +60,26 @@ export function AuthProvider({ children }) {
       return undefined;
     }
     const controller = new AbortController();
+    // Renewing (rather than just reading the account) pushes the expiry forward
+    // on every visit, so the owner stays signed in until they sign out.
     api
-      .getAccount(controller.signal)
-      .then((account) => {
+      .refreshSession(controller.signal)
+      .then((session) => {
         if (!mounted.current) return;
-        setUser(toUser(account));
+        setUser(toUser(session.account));
       })
       .catch((error) => {
         if (!mounted.current || controller.signal.aborted) return;
-        if (error instanceof api.ApiError && error.isOffline) {
-          // The backend is down, not the session. Keep the token and say so.
-          setSessionNotice('Backend unreachable — working offline until it returns.');
-        } else {
+        if (error instanceof api.ApiError && error.isAuthFailure) {
           api.clearSession();
-          if (error?.code === 'token_expired') {
+          if (error.code === 'token_expired') {
             setSessionNotice('Your session expired. Sign in again.');
           }
+        } else {
+          // The backend is down or slow, not the session. Keep the owner
+          // signed in on the stored account and say so.
+          setUser(toUser(stored.account));
+          setSessionNotice('Backend unreachable — working offline until it returns.');
         }
       })
       .finally(() => {
@@ -109,6 +116,18 @@ export function AuthProvider({ children }) {
 
   const loginWithDemo = useCallback(async () => adopt(await api.demoLogin()), [adopt]);
 
+  /** `idToken` is the Firebase ID token for a phone number verified by SMS. */
+  const loginWithPhone = useCallback(
+    async (idToken, displayName) => adopt(await api.phoneLogin({ idToken, displayName })),
+    [adopt],
+  );
+
+  /** `idToken` is the Firebase ID token from Google's sign-in window. */
+  const loginWithGoogle = useCallback(
+    async (idToken) => adopt(await api.googleLogin({ idToken })),
+    [adopt],
+  );
+
   const logout = useCallback(() => {
     api.logout();
     setUser(null);
@@ -126,8 +145,8 @@ export function AuthProvider({ children }) {
   }, []);
 
   const value = useMemo(
-    () => ({ user, checking, sessionNotice, login, signup, loginWithDemo, logout, handleAuthFailure }),
-    [user, checking, sessionNotice, login, signup, loginWithDemo, logout, handleAuthFailure],
+    () => ({ user, checking, sessionNotice, login, signup, loginWithDemo, loginWithPhone, loginWithGoogle, logout, handleAuthFailure }),
+    [user, checking, sessionNotice, login, signup, loginWithDemo, loginWithPhone, loginWithGoogle, logout, handleAuthFailure],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
