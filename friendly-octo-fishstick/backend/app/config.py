@@ -146,6 +146,8 @@ class Settings:
     windsor_auth_mode: str
     windsor_api_key: str | None
     windsor_cache_seconds: int
+    uploadpost_api_base: str
+    uploadpost_api_key: str | None
     enable_demo_sabotage: bool
     #: Dedicated HMAC key for the fact-lock seal. Never logged or returned.
     seal_secret: str | None
@@ -235,6 +237,11 @@ class Settings:
     @property
     def windsor_configured(self) -> bool:
         return bool((self.windsor_auth_mode == "oauth") or self.windsor_api_key)
+
+    @property
+    def uploadpost_configured(self) -> bool:
+        """Whether posting to the owner's own social accounts can really run."""
+        return bool(self.uploadpost_api_key)
 
 
 def _build_settings() -> Settings:
@@ -331,6 +338,8 @@ def _build_settings() -> Settings:
         windsor_auth_mode=(_env("TITAN_WINDSOR_AUTH_MODE", "oauth") or "oauth").lower(),
         windsor_api_key=_env_secret("TITAN_WINDSOR_API_KEY"),
         windsor_cache_seconds=_env_int("TITAN_WINDSOR_CONNECTOR_CACHE_SECONDS", 300),
+        uploadpost_api_base=_env("TITAN_UPLOADPOST_API_BASE", "https://api.upload-post.com") or "https://api.upload-post.com",
+        uploadpost_api_key=_env_secret("TITAN_UPLOADPOST_API_KEY"),
         enable_demo_sabotage=(_env("TITAN_ENABLE_DEMO_SABOTAGE", "false") or "false").lower() == "true",
         seal_secret=_env("TITAN_SEAL_SECRET"),
         auth_secret=auth_secret,

@@ -336,6 +336,34 @@ export async function voiceTurn(campaignId, { blob, mimeType, languageHint } = {
   });
 }
 
+/**
+ * The spoken answer to "shall I post this for you?": the backend transcribes
+ * it and reports `yes`, `no` or `unclear`. It never posts anything itself.
+ */
+export async function publishTurn(campaignId, { blob, mimeType } = {}) {
+  const audioB64 = await blobToBase64(blob);
+  return request(`/campaigns/${campaignId}/publish-turn`, {
+    method: 'POST',
+    timeoutMs: 60_000,
+    body: { audio_b64: audioB64, audio_mime: mimeType || blob?.type || 'audio/webm' },
+  });
+}
+
+/** Whether posting is set up, and which of the owner's social accounts are linked. */
+export function socialStatus({ signal } = {}) {
+  return request('/social/status', { signal });
+}
+
+/** A link to the hosted page where the owner signs in to their social accounts. */
+export function socialConnect(redirectUrl) {
+  return request('/social/connect', { method: 'POST', body: redirectUrl ? { redirect_url: redirectUrl } : {} });
+}
+
+/** Post the campaign's verified poster and caption to the linked accounts. */
+export function postCampaignSocial(campaignId) {
+  return request(`/campaigns/${campaignId}/social/post`, { method: 'POST', timeoutMs: 150_000, body: {} });
+}
+
 export function extractFacts(campaignId) {
   return request(`/campaigns/${campaignId}/extract`, { method: 'POST', timeoutMs: 60_000 });
 }

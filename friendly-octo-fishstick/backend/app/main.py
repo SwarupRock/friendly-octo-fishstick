@@ -19,6 +19,7 @@ from .api import (
     health,
     plans,
     publisher,
+    social,
     stt_stream,
     videos,
     voice_turn,
@@ -153,6 +154,7 @@ def create_app() -> FastAPI:
     app.include_router(voice_turn.router, prefix="/api")
     app.include_router(guardian_api.router, prefix="/api")
     app.include_router(publisher.router, prefix="/api")
+    app.include_router(social.router, prefix="/api")
 
     @app.get("/", include_in_schema=False)
     def root() -> dict[str, str]:

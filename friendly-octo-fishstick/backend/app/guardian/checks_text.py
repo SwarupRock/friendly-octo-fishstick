@@ -52,8 +52,10 @@ _NUMBER = re.compile(r"\d[\d.,]*")
 #: reel compositor/editor keys off), never a claim seen by a customer, so the
 #: label prefix is removed before checks. Only the LABEL is removed — any
 #: numbers in the rest of the line remain fully subject to numeric parity.
+#: A label counts at the start of a line or straight after a sentence end: the
+#: live model often writes every scene on one line ("\u2026 drinks. Scene 2: Cut\u2026").
 _SCENE_LABEL = re.compile(
-    r"(?m)^[ \t]*(?:scene|shot|frame|beat)\s+\d+\s*[:.\-\u2014]\s*",
+    r"(?m)(?:^[ \t]*|(?<=[.!?]\s))(?:scene|shot|frame|beat)\s+\d+\s*[:.\-\u2014]\s*",
     re.IGNORECASE,
 )
 

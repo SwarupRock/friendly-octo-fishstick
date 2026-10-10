@@ -492,6 +492,18 @@ a.vw-ghost, a.vw-btn { text-decoration: none; }
   text-align: center;
 }
 
+/* Keeps the newest message clear of the sticky mic dock when scrolled to. */
+.vw-thread > :last-child { scroll-margin-bottom: 170px; }
+
+/* ── posting to social media ─────────────────────────────────────────── */
+.vw-accounts { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 6px; }
+.vw-accounts li { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--vw-muted); }
+.vw-accounts li.is-on { color: var(--vw-ink); }
+.vw-accounts li.is-bad { color: var(--vw-warn-ink); }
+.vw-accounts small { margin-left: auto; padding-left: 12px; font-size: 11.5px; color: var(--vw-muted); text-align: right; }
+.vw-accounts a { color: inherit; }
+.vw-note .vw-spin { display: inline-block; vertical-align: -2px; margin-right: 6px; }
+
 .vw-bubble.vw-package { max-width: min(860px, 100%); }
 
 .vw-media { display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-start; margin: 6px 0 12px; }

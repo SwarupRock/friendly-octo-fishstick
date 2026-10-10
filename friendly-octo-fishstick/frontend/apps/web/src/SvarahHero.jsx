@@ -22,11 +22,6 @@ export function SvarahHeader() {
       <div className="nav-wrap">
         <Wordmark size="lg" />
         <nav className={open ? 'nav-links open' : 'nav-links'}>
-          <NavLink className="nav-link" to="/why-flow">Product</NavLink>
-          <NavLink className="nav-link" to="/business">Solutions</NavLink>
-          <NavLink className="nav-link" to="/developers">Developers</NavLink>
-          <NavLink className="nav-link" to="/notetaker">Notetaker</NavLink>
-          <NavLink className="nav-link" to="/pricing">Pricing</NavLink>
           <div className="mobile-nav-cta">
             {user ? (
               <Link className="button btn-lime" to="/workspace">Open workspace <ArrowRight size={16}/></Link>

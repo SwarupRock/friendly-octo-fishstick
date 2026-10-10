@@ -116,7 +116,12 @@ function TokenizedTemplate({ template }) {
   );
 }
 
-export default function PlanStep({ campaignId, factsLocked, plan, substituted, onPlanned }) {
+/** Fill `{{TOKEN}}` spans with the locked fact values; unknown tokens stay as written. */
+function fillTokens(text, tokens) {
+  return String(text ?? '').replace(/\{\{\s*([A-Za-z0-9_]+)\s*\}\}/g, (match, name) => tokens?.[name] ?? match);
+}
+
+export default function PlanStep({ campaignId, factsLocked, plan, substituted, tokens, onPlanned }) {
   const { run, pending, error } = useAsyncAction();
   const [brief, setBrief] = useState(() => ({
     objective: plan?.brief?.objective ?? 'footfall',
@@ -185,7 +190,7 @@ export default function PlanStep({ campaignId, factsLocked, plan, substituted, o
         <div className="ws-card-head">
           <div>
             <span className="ws-kicker">Step 3 · Plan</span>
-            <h2>{plan.strategy?.angle || 'Campaign plan'}</h2>
+            <h2>{fillTokens(plan.strategy?.angle, tokens) || 'Campaign plan'}</h2>
           </div>
           <div className="ws-chips">
             {plan.is_mock ? <span className="ws-tag is-mock">Offline campaign brain</span> : null}
@@ -197,7 +202,7 @@ export default function PlanStep({ campaignId, factsLocked, plan, substituted, o
         </div>
 
         {plan.strategy?.rationale ? (
-          <p style={{ marginTop: 0, fontSize: 13.5, color: 'var(--muted)' }}>{plan.strategy.rationale}</p>
+          <p style={{ marginTop: 0, fontSize: 13.5, color: 'var(--muted)' }}>{fillTokens(plan.strategy.rationale, tokens)}</p>
         ) : null}
 
         <Banner tone="info" title="Facts are not editable here">
@@ -268,7 +273,9 @@ export default function PlanStep({ campaignId, factsLocked, plan, substituted, o
         <div className="ws-card">
           <div className="ws-card-head">
             <h3>Localized copy</h3>
-            <span className="ws-tag">{Object.keys(localized).length} languages</span>
+            <span className="ws-tag">
+              {Object.keys(localized).length} {Object.keys(localized).length === 1 ? 'language' : 'languages'}
+            </span>
           </div>
           <div className="ws-grid cols-2">
             {Object.entries(localized).map(([language, channels]) => (

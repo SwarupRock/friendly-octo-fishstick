@@ -71,6 +71,13 @@ export function useResource(loader, deps = [], { enabled = true } = {}) {
   const [nonce, setNonce] = useState(0);
 
   const reload = useCallback(() => setNonce((n) => n + 1), []);
+  // A background refresh: same request, but no loading flash and a failed
+  // poll leaves the last good data on screen.
+  const quiet = useRef(false);
+  const refresh = useCallback(() => {
+    quiet.current = true;
+    setNonce((n) => n + 1);
+  }, []);
 
   useEffect(() => {
     if (!enabled) {
@@ -79,17 +86,22 @@ export function useResource(loader, deps = [], { enabled = true } = {}) {
     }
     const controller = new AbortController();
     let active = true;
-    setLoading(true);
-    setError(null);
+    const silent = quiet.current;
+    quiet.current = false;
+    if (!silent) {
+      setLoading(true);
+      setError(null);
+    }
     Promise.resolve(loader(controller.signal))
       .then((result) => {
         if (!active) return;
         setData(result);
+        if (silent) setError(null);
       })
       .catch((caught) => {
         if (!active || controller.signal.aborted) return;
         if (caught instanceof ApiError && caught.isAuthFailure) handleAuthFailure();
-        setError(caught);
+        if (!silent) setError(caught);
       })
       .finally(() => {
         if (active) setLoading(false);
@@ -101,7 +113,7 @@ export function useResource(loader, deps = [], { enabled = true } = {}) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [...deps, nonce, enabled]);
 
-  return { data, loading, error, reload, setData };
+  return { data, loading, error, reload, refresh, setData };
 }
 
 /**

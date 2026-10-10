@@ -175,3 +175,19 @@ def test_sabotage_demo_end_to_end(client, monkeypatch):
     finally:
         monkeypatch.setenv("TITAN_ENABLE_DEMO_SABOTAGE", "false")
         config.reset_settings_cache()
+
+
+def test_scene_labels_on_one_line_are_not_numbers():
+    """The live model writes every scene on one line; labels are still metadata."""
+    from app.guardian.checks_text import verify_text
+
+    tokens = {"DISCOUNT": "20%", "DAYS": "Saturday & Sunday"}
+    script = "Scene 1: Iced drinks on the counter. Scene 2: Friends laughing. Scene 3: A toast."
+    outcomes = {o.check: o for o in verify_text(script, tokens)}
+    assert outcomes["numeric_parity"].verdict == "PASS"
+    assert len(outcomes["numeric_parity"].details["scene_labels_ignored"]) == 3
+
+    # A fabricated number inside a scene line still fails.
+    outcomes = {o.check: o for o in verify_text(script + " Scene 4: 50% off sign.", tokens)}
+    assert outcomes["numeric_parity"].verdict == "FAIL"
+    assert outcomes["numeric_parity"].details["unmapped_numbers"] == ["50"]

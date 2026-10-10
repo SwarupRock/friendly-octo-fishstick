@@ -1,13 +1,13 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import {
-  AudioLines, Check, Copy, Download, History, LayoutGrid, LogOut, Mic, Plus, Sparkles, X,
+  AudioLines, Check, Copy, Download, ExternalLink, History, LayoutGrid, LogOut, Mic, Plus, Share2, Sparkles, X,
 } from 'lucide-react';
 import {
   createAudioCampaign, createPlan, errorMessage, exportCampaign, fetchAssetObjectUrl,
   generateAiVideo, generateBragVideo, generateCaptions, generatePosters, generateSpeech, getCampaign,
   humanVerifyAsset, listAssets, listCampaigns, listVideoJobs, loadSession, lockFactSheet,
-  openSttStream, verifyCampaign, voiceTurn,
+  openSttStream, postCampaignSocial, publishTurn, socialConnect, socialStatus, verifyCampaign, voiceTurn,
 } from '../lib/api';
 import { useAuth } from '../AuthContext';
 import ThemeToggle from '../ThemeToggle';
@@ -27,11 +27,18 @@ import './voice-workspace.css';
  *    a designed poster, voice-over, a campaign video and an AI video. The
  *    slow pieces run side by side, and the wait shows what is being made.
  *
+ * 4. When the package is ready it asks, by voice, whether to post it on the
+ *    owner's social media. "Yes" links their accounts (once) and posts the
+ *    poster and caption; "no" ends the conversation and returns home.
+ *
  * Everything it creates is an ordinary campaign, so the full studio
  * (`/studio`) can open the same offer to inspect every detail.
  */
 
 const VIDEO_POLL_MS = 5000;
+const CONNECT_POLL_MS = 4000;
+const GOODBYE_MS = 2600;
+const PLATFORM_NAMES = { instagram: 'Instagram', facebook: 'Facebook', x: 'X' };
 
 /** The package, in the order it is shown. `after` = stages that must finish first. */
 const STAGES = [
@@ -131,6 +138,11 @@ export default function VoiceWorkspace() {
   const [now, setNow] = useState(() => Date.now());
   const [error, setError] = useState('');
   const [historyOpen, setHistoryOpen] = useState(false);
+  // Posting to social media: null until the question is answered, then
+  // { phase: 'connect'|'done'|'declined'|'unavailable', … }.
+  const [publish, setPublish] = useState(null);
+  const [publishSaid, setPublishSaid] = useState([]); // spoken answers to the posting question
+  const goodbyeRef = useRef(null);
   // Live transcription while the speaker is still talking.
   const [liveText, setLiveText] = useState('');
   const [liveNote, setLiveNote] = useState('');
@@ -178,6 +190,8 @@ export default function VoiceWorkspace() {
     setMaking(null);
     setError('');
     setBusy('');
+    setPublish(null);
+    setPublishSaid([]);
     clearMedia();
   }, [clearMedia]);
 
@@ -228,7 +242,9 @@ export default function VoiceWorkspace() {
 
   useEffect(() => {
     threadRef.current?.scrollTo({ top: threadRef.current.scrollHeight, behavior: 'smooth' });
-  }, [busy, stages, session, assets, turns, jobs, liveText]);
+    // The page itself scrolls when the thread is taller than the window.
+    threadRef.current?.lastElementChild?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+  }, [busy, stages, session, assets, turns, jobs, liveText, publish, publishSaid]);
 
   // ── video jobs: polling is what advances an AI video to "done" ────────
   const sessionId = session?.id;
@@ -370,6 +386,79 @@ export default function VoiceWorkspace() {
     }
   }, []);
 
+  // ── posting to the owner's social media ───────────────────────────────
+  useEffect(() => () => clearTimeout(goodbyeRef.current), []);
+
+  const postNow = useCallback(async (campaignId) => {
+    setBusy('Posting your campaign…');
+    try {
+      const out = await postCampaignSocial(campaignId);
+      setPublish({ phase: 'done', results: out.results, isMock: out.is_mock });
+    } catch (err) {
+      setPublish(null); // the question stays open, so "yes" tries again
+      setError(`${errorMessage(err)} Say “yes” to try again, or “no” to finish.`);
+    } finally {
+      setBusy('');
+    }
+  }, []);
+
+  /** A spoken "yes": post straight away, or first ask the owner to sign in. */
+  const startPublish = useCallback(async (campaignId) => {
+    setBusy('Checking your social accounts…');
+    try {
+      const status = await socialStatus();
+      if (!status.configured) {
+        setPublish({ phase: 'unavailable' });
+        return;
+      }
+      if (status.accounts.some((account) => account.connected)) {
+        await postNow(campaignId);
+        return;
+      }
+      const link = await socialConnect(`${window.location.origin}/connected`);
+      setPublish({ phase: 'connect', accessUrl: link.access_url, accounts: status.accounts });
+      // Usually blocked (this is not a direct click); the button below is the fallback.
+      window.open(link.access_url, '_blank', 'noopener');
+    } catch (err) {
+      setPublish(null);
+      setError(`${errorMessage(err)} Say “yes” to try again, or “no” to finish.`);
+    } finally {
+      setBusy((current) => (current.startsWith('Checking') ? '' : current));
+    }
+  }, [postNow]);
+
+  /** A spoken "no": end the conversation and go back to the home page. */
+  const declinePublish = useCallback(() => {
+    setPublish({ phase: 'declined' });
+    goodbyeRef.current = setTimeout(() => navigate('/'), GOODBYE_MS);
+  }, [navigate]);
+
+  // While the owner is signing in on the connect page, watch for the first
+  // linked account and then post — they already said yes.
+  const connecting = publish?.phase === 'connect';
+  useEffect(() => {
+    if (!connecting || !sessionId) return undefined;
+    let cancelled = false;
+    const timer = setInterval(async () => {
+      try {
+        const status = await socialStatus();
+        if (cancelled) return;
+        if (status.accounts.some((account) => account.connected)) {
+          clearInterval(timer);
+          await postNow(sessionId);
+        } else {
+          setPublish((prev) => (prev?.phase === 'connect' ? { ...prev, accounts: status.accounts } : prev));
+        }
+      } catch {
+        /* a failed check is retried on the next tick */
+      }
+    }, CONNECT_POLL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [connecting, sessionId, postNow]);
+
   // ── derived state ─────────────────────────────────────────────────────
   const facts = session?.factsheet?.facts;
   const rows = useMemo(() => summarize(facts), [facts]);
@@ -392,6 +481,10 @@ export default function VoiceWorkspace() {
   // A locked offer whose package was interrupted can be resumed by voice.
   const resumable = locked && !poster && rows.length > 0;
   const ready = Boolean(poster) && !needsReview && !videoActive && !busy && !making;
+  // The poster and caption are what gets posted, so the question does not
+  // wait for the AI video that is still rendering.
+  const canPost = Boolean(poster) && locked && !needsReview && !making;
+  const askingPublish = canPost && (!publish || publish.phase === 'connect');
   const bragVideo = videos.find((v) => v.provider === 'brag_director');
   const aiVideo = videos.find((v) => v.provider !== 'brag_director' && v.provider !== 'ffmpeg');
   const reel = videos.find((v) => v.provider === 'ffmpeg');
@@ -407,7 +500,7 @@ export default function VoiceWorkspace() {
   // What the next spoken reply means. Read through a ref so the recorder
   // callbacks always see the current state.
   const stageRef = useRef({});
-  stageRef.current = { session, assets, reviewing, awaitingAccept, resumable };
+  stageRef.current = { session, assets, reviewing, awaitingAccept, resumable, askingPublish };
 
   // ── recording ─────────────────────────────────────────────────────────
   const closeStream = useCallback(() => {
@@ -466,7 +559,14 @@ export default function VoiceWorkspace() {
       const stage = stageRef.current;
       const answering = stage.reviewing || stage.awaitingAccept || stage.resumable;
       try {
-        if (answering) {
+        if (stage.askingPublish) {
+          // The answer to "shall I post this for you?".
+          setBusy('Listening to your answer…');
+          const turn = await publishTurn(stage.session.id, { blob, mimeType: blob.type });
+          setPublishSaid((prev) => [...prev, { heard: turn.heard, reply: turn.intent === 'unclear' ? turn.reply : '' }]);
+          if (turn.intent === 'yes') await startPublish(stage.session.id);
+          else if (turn.intent === 'no') declinePublish();
+        } else if (answering) {
           // A spoken reply to what is on screen: yes / a correction / start over.
           setBusy('Listening to your answer…');
           const turn = await voiceTurn(stage.session.id, { blob, mimeType: blob.type });
@@ -498,7 +598,7 @@ export default function VoiceWorkspace() {
         setBusy((current) => (current.startsWith('Listening') || current.startsWith('Transcribing') ? '' : current));
       }
     },
-    [mic, loadSessions, closeStream, makePackage, acceptResults, startNew, resetThread],
+    [mic, loadSessions, closeStream, makePackage, acceptResults, startNew, resetThread, startPublish, declinePublish],
   );
 
   const downloadPack = useCallback(async () => {
@@ -531,6 +631,9 @@ export default function VoiceWorkspace() {
     if (awaitingAccept) return 'Look at the poster. Hold Space or the mic and say “yes” if it is right.';
     if (resumable) return 'Hold Space or the mic and say “yes” to make your posts.';
     if (reviewing) return 'Hold Space or the mic: say “yes” if this is right, or say what to change.';
+    if (publish?.phase === 'declined') return '';
+    if (connecting) return 'Sign in on the page that opened. Say “no” to cancel.';
+    if (askingPublish) return 'Hold Space or the mic and say “yes” to post it, or “no” to finish.';
     if (ready) return 'Hold Space or the mic to start a new offer.';
     return '';
   })();
@@ -819,6 +922,98 @@ export default function VoiceWorkspace() {
             </div>
           ) : null}
 
+          {canPost ? (
+            <div className="vw-row">
+              <div className="vw-bubble is-app">
+                <span className="vw-tag"><Share2 size={11} /> Post it for you?</span>
+                Shall I post this on your social media for you? Say “yes” and I will post the
+                poster with its caption on your own accounts, or say “no” to finish here.
+              </div>
+            </div>
+          ) : null}
+
+          {canPost ? publishSaid.map((said, index) => (
+            // eslint-disable-next-line react/no-array-index-key
+            <React.Fragment key={index}>
+              {said.heard ? (
+                <div className="vw-row is-user">
+                  <div className="vw-bubble is-user"><span className="vw-tag">You said</span>{said.heard}</div>
+                </div>
+              ) : null}
+              {said.reply ? (
+                <div className="vw-row"><div className="vw-bubble is-warn">{said.reply}</div></div>
+              ) : null}
+            </React.Fragment>
+          )) : null}
+
+          {canPost && publish?.phase === 'connect' ? (
+            <div className="vw-row">
+              <div className="vw-bubble is-app">
+                <span className="vw-tag"><Share2 size={11} /> Connect your accounts</span>
+                First sign in to the accounts you want me to post to. You sign in with the social
+                network itself, so Svarah.AI never sees your password.
+                <ul className="vw-accounts">
+                  {(publish.accounts ?? []).map((account) => (
+                    <li key={account.platform} className={account.connected ? 'is-on' : ''}>
+                      <span className="vw-stage-mark">{account.connected ? <Check size={12} /> : null}</span>
+                      {PLATFORM_NAMES[account.platform] ?? account.platform}
+                      <small>{account.reauth_required ? 'sign in again' : account.connected ? account.handle : 'not connected'}</small>
+                    </li>
+                  ))}
+                </ul>
+                <div className="vw-actions">
+                  <a className="vw-btn is-primary" href={publish.accessUrl} target="_blank" rel="noopener noreferrer">
+                    <ExternalLink size={14} /> Sign in to my accounts
+                  </a>
+                </div>
+                <p className="vw-note"><span className="vw-spin" /> Waiting for you to connect — I will post as soon as you are back.</p>
+              </div>
+            </div>
+          ) : null}
+
+          {publish?.phase === 'done' ? (
+            <div className="vw-row">
+              <div className="vw-bubble is-app">
+                <span className="vw-tag"><Share2 size={11} /> Posting</span>
+                <ul className="vw-accounts">
+                  {publish.results.map((result) => (
+                    <li key={result.platform} className={result.status === 'FAILED' ? 'is-bad' : 'is-on'}>
+                      <span className="vw-stage-mark">{result.status === 'FAILED' ? <X size={12} /> : <Check size={12} />}</span>
+                      {result.status === 'PUBLISHED'
+                        ? `${result.already_posted ? 'Already posted' : 'Posted'} on ${PLATFORM_NAMES[result.platform] ?? result.platform}`
+                        : result.status === 'PUBLISHING'
+                          ? `${PLATFORM_NAMES[result.platform] ?? result.platform} is still uploading it`
+                          : `${PLATFORM_NAMES[result.platform] ?? result.platform} did not accept it`}
+                      <small>
+                        {result.status === 'FAILED' ? result.error : result.account}
+                        {result.url ? <> · <a href={result.url} target="_blank" rel="noopener noreferrer">View post</a></> : null}
+                      </small>
+                    </li>
+                  ))}
+                </ul>
+                {publish.isMock ? <p className="vw-note">Demo mode: nothing was really posted.</p> : null}
+              </div>
+            </div>
+          ) : null}
+
+          {publish?.phase === 'unavailable' ? (
+            <div className="vw-row">
+              <div className="vw-bubble is-warn">
+                Posting is not set up on this Svarah server yet, so nothing was posted. Your campaign
+                is saved — use Download to post it yourself.
+              </div>
+            </div>
+          ) : null}
+
+          {publish?.phase === 'declined' ? (
+            <div className="vw-row">
+              <div className="vw-bubble is-app">
+                No problem — nothing was posted. Your campaign is saved in History. Taking you back
+                to the home page…
+              </div>
+            </div>
+          ) : null}
+
           {captions.length > 0 && !showPackage && !busy ? (
             <div className="vw-row">
               <div className="vw-bubble is-app">
@@ -886,7 +1081,7 @@ export default function VoiceWorkspace() {
             holdKey="Space"
             ariaLabel="Hold Space, or hold or tap the mic, to speak"
             getLevel={mic.getLevel}
-            disabled={Boolean(busy) || Boolean(making)}
+            disabled={Boolean(busy) || Boolean(making) || publish?.phase === 'declined'}
             onStart={handleStart}
             onStop={handleStop}
           />

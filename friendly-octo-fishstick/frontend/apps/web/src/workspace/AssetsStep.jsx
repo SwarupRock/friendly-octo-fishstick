@@ -56,6 +56,9 @@ const CHANNEL_LABELS = {
   instagram: 'Instagram caption',
   facebook: 'Facebook caption',
   reel_script: 'Reel script',
+  x: 'X post',
+  poster_headline: 'Poster headline',
+  poster_subline: 'Poster subline',
 };
 const VIDEO_POLL_MS = 5000;
 
@@ -746,7 +749,7 @@ function ReelPanel({ campaignId, jobs, hasPoster, onChanged, showToast }) {
 }
 
 /** Previews for one asset kind, with per-asset provenance. */
-function AssetGallery({ title, icon, assets, kind }) {
+export function AssetGallery({ title, icon, assets, kind }) {
   if (!assets?.length) return null;
   const Icon = icon;
   return (
@@ -758,7 +761,7 @@ function AssetGallery({ title, icon, assets, kind }) {
         </h3>
         <span className="ws-tag">{assets.length}</span>
       </div>
-      <div className={kind === 'poster' ? 'ws-grid cols-3' : 'ws-grid cols-2'}>
+      <div className={kind === 'poster' ? 'ws-grid cols-3 is-gallery' : 'ws-grid cols-2'}>
         {assets.map((asset) => (
           <article key={asset.id} className="ws-asset">
             {kind === 'poster' ? <AssetImage assetId={asset.id} alt={`Poster ${asset.id}`} /> : null}

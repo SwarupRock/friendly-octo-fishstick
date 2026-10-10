@@ -28,6 +28,16 @@
   z-index: 40;
 }
 
+/* The shared toggle is absolutely positioned for the auth pages; inside this
+   header it belongs in the flow, so it does not sit on top of "Sign out". */
+.ws-nav .theme-toggle-btn {
+  position: static;
+  flex: none;
+  width: 34px;
+  height: 34px;
+  z-index: auto;
+}
+
 .ws-nav-logo {
   display: inline-flex;
   align-items: center;
@@ -128,6 +138,8 @@
   color: var(--muted, #777971);
 }
 
+.ws-page-head .ws-kicker { display: block; }
+
 .ws-page-head h1 {
   font-family: Manrope, sans-serif;
   font-size: clamp(26px, 3vw, 38px);
@@ -199,6 +211,8 @@
 .ws-grid { display: grid; gap: 16px; }
 .ws-grid.cols-2 { grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
 .ws-grid.cols-3 { grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+/* A gallery keeps its column width, so one poster is not stretched page-wide. */
+.ws-grid.cols-3.is-gallery { grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); }
 .ws-grid.cols-4 { grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); }
 
 /* ── stats ──────────────────────────────────────────────────────────── */
@@ -646,3 +660,52 @@
 .ws-job { display: grid; gap: 6px; padding: 10px 0; border-top: 1px solid var(--line, #e4e3dc); font-size: 12.5px; }
 .ws-job:first-child { border-top: 0; }
 .ws-job-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+
+/* ── live studio (view only) ────────────────────────────────────────── */
+.ws-timeline { list-style: none; margin: 0 0 20px; padding: 0; display: flex; flex-wrap: wrap; gap: 8px; }
+.ws-timeline li {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 12px 7px 8px;
+  border: 1px solid var(--line, #e4e5dd);
+  border-radius: 999px;
+  background: #fff;
+  font-size: 12.5px;
+  color: var(--muted, #777971);
+}
+.ws-timeline li.is-done { color: var(--ink, #191a17); }
+.ws-timeline li.is-doing { color: var(--ink, #191a17); border-color: var(--ink, #191a17); }
+.ws-timeline-mark {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 1px solid var(--line, #e4e5dd);
+}
+.is-done > .ws-timeline-mark, .ws-timeline-mark.is-ok { background: #d8f878; border-color: transparent; color: #191a17; }
+.ws-timeline-mark.is-bad { background: #fdeeeb; border-color: transparent; color: #8c2d1c; }
+.ws-pulse {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #7aa80f;
+  animation: ws-pulse 1.2s ease-in-out infinite;
+}
+@keyframes ws-pulse { 50% { opacity: 0.25; transform: scale(0.7); } }
+
+.ws-live-grid { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 16px; align-items: start; }
+.ws-live-main, .ws-live-side { display: grid; gap: 16px; min-width: 0; }
+.ws-live-side { position: sticky; top: 84px; }
+@media (max-width: 900px) {
+  .ws-live-grid { grid-template-columns: minmax(0, 1fr); }
+  .ws-live-side { position: static; }
+}
+
+.ws-feed { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; max-height: 420px; overflow-y: auto; }
+.ws-feed li { display: flex; gap: 9px; align-items: flex-start; font-size: 13px; }
+.ws-feed b { display: block; font-weight: 600; }
+.ws-feed small { color: var(--muted, #777971); font-size: 11.5px; }

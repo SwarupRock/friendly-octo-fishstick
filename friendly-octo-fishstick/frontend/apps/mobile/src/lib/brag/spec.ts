@@ -56,6 +56,9 @@ export function buildSpec({ board, tokens, businessName, headline, art, voiceSec
 
   const facts: Record<string, string> = {};
   for (const name of FACT_NAMES) if (tokens[name]) facts[name] = tokens[name];
+  // The app's DISCOUNT token is the whole phrase ("20% off"); the template sets
+  // the figure huge and adds "OFF" beneath it, so the figure is handed over alone.
+  if (facts.DISCOUNT) facts.DISCOUNT = facts.DISCOUNT.replace(/\s*off\s*$/i, '');
   const discount = facts.DISCOUNT ?? '';
 
   const names = ['hook', 'reveal', ...board.video.order, 'outro'].filter(

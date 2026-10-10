@@ -17,22 +17,26 @@ export default function TextRevealScroll({ children, className = '' }) {
         const text = node.textContent;
         if (!text.trim()) return;
         
-        const fragment = document.createDocumentFragment();
-        const chars = text.split('');
+        // One wrapper per text node, so a flex parent with a gap (list items,
+        // buttons) lays out a single item instead of one per character.
+        const fragment = document.createElement('span');
+        fragment.className = 'trs-text';
+        // Split on graphemes, not code units, so Indic matras and conjuncts
+        // stay attached to their base letter.
+        const chars = typeof Intl !== 'undefined' && Intl.Segmenter
+          ? Array.from(new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(text), (s) => s.segment)
+          : Array.from(text);
         chars.forEach((char) => {
           const span = document.createElement('span');
           span.textContent = char;
           span.className = 'trs-char';
           span.style.opacity = '0.2';
           span.style.willChange = 'opacity';
-          // Preserve spaces
-          if (char === ' ') {
-            span.style.whiteSpace = 'pre';
-          }
           fragment.appendChild(span);
         });
         node.parentNode.replaceChild(fragment, node);
-      } else if (node.nodeType === Node.ELEMENT_NODE && node.nodeName !== 'SCRIPT' && node.nodeName !== 'STYLE') {
+      } else if (node.nodeType === Node.ELEMENT_NODE && node.nodeName !== 'SCRIPT' && node.nodeName !== 'STYLE' && !node.classList.contains('trs-text')) {
+        // Already-split text is skipped: the effect runs twice under StrictMode.
         Array.from(node.childNodes).forEach(splitText);
       }
     };

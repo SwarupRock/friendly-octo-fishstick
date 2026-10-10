@@ -46,7 +46,8 @@
         }
       ],
       "expo-video",
-      "expo-sharing"
+      "expo-sharing",
+      "./plugins/with-gradle-jdk17"
     ],
     "experiments": {
       "typedRoutes": true,

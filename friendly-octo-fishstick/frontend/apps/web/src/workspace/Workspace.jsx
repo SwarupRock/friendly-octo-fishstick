@@ -1,55 +1,95 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   ArrowLeft,
   AudioLines,
+  Check,
+  Film,
+  FileImage,
+  Image as ImageIcon,
   LogOut,
   Megaphone,
   Mic,
-  Plus,
-  RefreshCw,
+  Volume2,
+  X,
 } from 'lucide-react';
 import {
-  extractFacts,
   getCampaign,
   getPlan,
   listAssets,
   listCampaigns,
-  setCampaignTranscript,
+  listPublishRecords,
+  listVideoJobs,
 } from '../lib/api';
 import { useAuth } from '../AuthContext';
 import ThemeToggle from '../ThemeToggle';
-import { useAsyncAction, useBackendStatus, useResource, useToast } from './hooks';
-import { errorMessage } from '../lib/api';
-import { Banner, EmptyState, ErrorBanner, Spinner, StatusPill, StepRail, Toast } from './ui';
-import CaptureStep from './CaptureStep';
-import FactReviewStep from './FactReviewStep';
-import PlanStep from './PlanStep';
-import AssetsStep from './AssetsStep';
-import VerifyStep from './VerifyStep';
-import PublishStep from './PublishStep';
+import { useBackendStatus, useResource } from './hooks';
+import { Banner, EmptyState, ErrorBanner, Spinner, StatusPill } from './ui';
+import { AssetGallery } from './AssetsStep';
 import './workspace.css';
 
 /**
- * The signed-in Svarah workspace.
+ * The studio: a live, view-only window onto every campaign.
  *
- * Holds one piece of state that matters — which campaign is open, and at which
- * step — and keeps it in the URL (`?campaign=12&step=assets`), so a refresh or
- * a shared link lands on the same screen. Everything else is loaded from the
- * backend. There is no local mirror of campaign data to drift out of sync:
- * after any mutation the affected resource is reloaded.
+ * Campaigns are made in the voice workspace. This screen only *shows* them —
+ * what was said, the locked facts, the plan, every asset, each check and each
+ * post — and keeps itself current by polling. There is nothing here that
+ * creates, edits, generates, verifies or publishes: it makes no write calls.
+ *
+ * The open campaign lives in the URL (`?campaign=12`), so a refresh or a
+ * shared link lands on the same screen.
  */
 
-const STEPS = [
-  { id: 'capture', label: 'Capture' },
-  { id: 'facts', label: 'Confirm facts' },
-  { id: 'plan', label: 'Plan' },
-  { id: 'assets', label: 'Create' },
-  { id: 'verify', label: 'Verify' },
-  { id: 'publish', label: 'Approve & publish' },
-];
+const LIST_POLL_MS = 5000;
+const DETAIL_POLL_MS = 3000;
 
-const STEP_IDS = STEPS.map((step) => step.id);
+const CHANNEL_LABELS = {
+  instagram: 'Instagram',
+  facebook: 'Facebook',
+  x: 'X',
+  whatsapp: 'WhatsApp',
+  poster_headline: 'Poster headline',
+  poster_subline: 'Poster subline',
+  reel_script: 'Reel script',
+  voice_script: 'Voice script',
+};
+
+/** Audit event → what happened, in plain words. Unknown events fall back to their name. */
+const EVENT_LABELS = {
+  'campaign.created': 'Offer received',
+  'stt.completed': 'Speech turned into words',
+  'stt.unavailable': 'Speech could not be transcribed',
+  'extraction.completed': 'Facts read from the offer',
+  'voice.turn': 'Spoken reply during fact review',
+  'voice.publish_turn': 'Spoken answer about posting',
+  'factsheet.updated': 'Facts corrected',
+  'factsheet.locked': 'Facts confirmed and locked',
+  'plan.created': 'Campaign planned',
+  'publish.prepared': 'Post prepared',
+  'publish.approved': 'Post approved',
+  'publish.executed': 'Post sent',
+  'publish.social': 'Posted to social media',
+};
+
+/** Re-run `tick` on an interval while the tab is visible. */
+function usePolling(tick, intervalMs) {
+  useEffect(() => {
+    const timer = setInterval(() => {
+      if (!document.hidden) tick();
+    }, intervalMs);
+    return () => clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [intervalMs]);
+}
+
+function fillTokens(text, tokens) {
+  return String(text ?? '').replace(/\{\{\s*([A-Za-z0-9_]+)\s*\}\}/g, (match, name) => tokens?.[name] ?? match);
+}
+
+function clock(value) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? '' : date.toLocaleTimeString();
+}
 
 export default function Workspace() {
   const { user, checking, sessionNotice, logout } = useAuth();
@@ -58,24 +98,7 @@ export default function Workspace() {
 
   const rawCampaign = Number(searchParams.get('campaign'));
   const openCampaignId = Number.isInteger(rawCampaign) && rawCampaign > 0 ? rawCampaign : null;
-  const rawStep = searchParams.get('step');
-  const openStep = STEP_IDS.includes(rawStep) ? rawStep : 'facts';
-
-  const openCampaign = useCallback(
-    (campaignId, step = 'facts') => {
-      setSearchParams(campaignId ? { campaign: String(campaignId), step } : {});
-    },
-    [setSearchParams],
-  );
-  const selectStep = useCallback(
-    (step) => {
-      // Step changes replace history, so Back leaves the campaign in one press.
-      if (openCampaignId) setSearchParams({ campaign: String(openCampaignId), step }, { replace: true });
-    },
-    [openCampaignId, setSearchParams],
-  );
   const backend = useBackendStatus();
-  const { toast, show, showError, dismiss } = useToast();
 
   useEffect(() => {
     if (!checking && !user) navigate('/login', { replace: true });
@@ -102,13 +125,15 @@ export default function Workspace() {
           Svarah<span style={{ color: 'var(--muted)' }}>.AI</span>
         </Link>
 
-        <BackendPill backend={backend} />
+        <StatusPill status={backend.status === 'online' ? 'online' : backend.status}>
+          {backend.status === 'online' ? 'Live · view only' : backend.status === 'offline' ? 'Offline' : 'Connecting'}
+        </StatusPill>
 
         <span className="ws-nav-spacer" />
 
-        <Link to="/workspace" className="ws-btn is-ghost is-small" title="The quick voice workspace">
+        <Link to="/workspace" className="ws-btn is-ghost is-small" title="Make a campaign by voice">
           <Mic size={13} />
-          <span className="hide-mobile">Voice mode</span>
+          <span className="hide-mobile">Voice workspace</span>
         </Link>
 
         <ThemeToggle />
@@ -135,68 +160,29 @@ export default function Workspace() {
       <main className="ws-body">
         {sessionNotice ? <Banner tone="warn">{sessionNotice}</Banner> : null}
         {backend.status === 'offline' ? (
-          <Banner tone="error" title="The backend is not reachable">
-            Start it with <span className="ws-mono">uvicorn app.main:app --reload</span> in{' '}
-            <span className="ws-mono">backend/</span>. Nothing on this page is cached, so what you see is
-            whatever the backend last returned — not stale campaign data.
+          <Banner tone="error" title="Svarah is not reachable right now">
+            This page will catch up by itself as soon as the connection is back.
           </Banner>
         ) : null}
 
         {openCampaignId ? (
-          <CampaignDetail
+          <CampaignLive
             key={openCampaignId}
             campaignId={openCampaignId}
-            step={openStep}
-            setStep={selectStep}
-            backend={backend}
-            onClose={() => openCampaign(null)}
-            showToast={show}
-            showError={showError}
+            onClose={() => setSearchParams({})}
           />
         ) : (
-          <CampaignHome
-            backend={backend}
-            onOpen={openCampaign}
-            showToast={show}
-          />
+          <CampaignList onOpen={(id) => setSearchParams({ campaign: String(id) })} />
         )}
       </main>
-
-      <Toast toast={toast} />
     </div>
   );
 }
 
-/** Connection + provider-mode indicator. */
-function BackendPill({ backend }) {
-  const label =
-    backend.status === 'online'
-      ? `${backend.health.mode} mode · v${backend.health.version}`
-      : backend.status === 'degraded'
-        ? 'backend degraded'
-        : backend.status === 'offline'
-          ? 'backend offline'
-          : 'checking backend';
-
-  const sealOk = backend.modes?.seal?.configured;
-  return (
-    <>
-      <StatusPill status={backend.status} title={backend.modes?.database?.url}>
-        {label}
-      </StatusPill>
-      {backend.modes && !sealOk ? (
-        <StatusPill status="degraded" title={backend.modes.seal?.detail}>
-          fact lock disabled
-        </StatusPill>
-      ) : null}
-    </>
-  );
-}
-
-/** Step A — dashboard: real campaigns, real counts, one clear next action. */
-function CampaignHome({ backend, onOpen, showToast }) {
+/** Every campaign on the account, newest first, refreshed as they change. */
+function CampaignList({ onOpen }) {
   const campaigns = useResource((signal) => listCampaigns({ signal }), []);
-  const [creating, setCreating] = useState(false);
+  usePolling(campaigns.refresh, LIST_POLL_MS);
 
   const list = campaigns.data ?? [];
   const counts = useMemo(() => {
@@ -211,64 +197,23 @@ function CampaignHome({ backend, onOpen, showToast }) {
     return result;
   }, [list]);
 
-  const handleCreated = (campaign) => {
-    setCreating(false);
-    campaigns.reload();
-    if (campaign.transcript) {
-      showToast(`Campaign #${campaign.id} created.`);
-      onOpen(campaign.id, 'facts');
-    } else {
-      // Transcription failed: land on the capture step, which shows the
-      // provider's reason and lets the owner type the brief instead.
-      showToast(campaign.stt?.message || 'The recording was saved, but it could not be transcribed.', {
-        error: true,
-      });
-      onOpen(campaign.id, 'capture');
-    }
-  };
-
-  if (creating) {
-    return (
-      <>
-        <button type="button" className="ws-btn is-ghost is-small" onClick={() => setCreating(false)} style={{ marginBottom: 16 }}>
-          <ArrowLeft size={13} /> Back to campaigns
-        </button>
-        <CaptureStep onCreated={handleCreated} />
-      </>
-    );
-  }
-
   return (
     <>
       <div className="ws-page-head">
         <div>
-          <span className="ws-kicker">Workspace</span>
+          <span className="ws-kicker">Studio · live</span>
           <h1>Your campaigns</h1>
           <p>
-            Describe an offer once. Svarah confirms the facts with you, writes the copy, builds the poster and
-            reel, checks every number against what you approved, and gets it ready to publish.
+            Everything Svarah makes from your voice shows up here as it happens. This is a window, not a
+            workbench — campaigns are made and changed in the voice workspace.
           </p>
-        </div>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <button type="button" className="ws-btn is-ghost" onClick={campaigns.reload}>
-            <RefreshCw size={14} /> Refresh
-          </button>
-          <button type="button" className="ws-btn is-primary" onClick={() => setCreating(true)}>
-            <Plus size={15} /> New campaign
-          </button>
         </div>
       </div>
 
-      <div className="ws-grid cols-4" style={{ marginBottom: 20 }}>
-        <Stat label="Campaigns" value={counts.total} sub="Stored in your account" loading={campaigns.loading} />
-        <Stat label="Facts locked" value={counts.locked} sub="Sealed and planable" loading={campaigns.loading} />
-        <Stat label="Verified" value={counts.verified} sub="Passed Guardian checks" loading={campaigns.loading} />
-        <Stat
-          label="Provider mode"
-          value={backend.health?.mode ?? '—'}
-          sub={backend.health?.mode === 'mock' ? 'Offline demo providers' : 'Live providers configured'}
-          loading={backend.status === 'checking'}
-        />
+      <div className="ws-grid cols-3" style={{ marginBottom: 20 }}>
+        <Stat label="Campaigns" value={counts.total} sub="On your account" loading={campaigns.loading} />
+        <Stat label="Facts locked" value={counts.locked} sub="Confirmed by you" loading={campaigns.loading} />
+        <Stat label="Verified" value={counts.verified} sub="Every number checked" loading={campaigns.loading} />
       </div>
 
       <ErrorBanner error={campaigns.error} title="Campaigns could not be loaded" />
@@ -283,25 +228,20 @@ function CampaignHome({ backend, onOpen, showToast }) {
           icon={Megaphone}
           title="No campaigns yet"
           action={
-            <button type="button" className="ws-btn is-primary" onClick={() => setCreating(true)}>
-              <Plus size={15} /> Start your first campaign
-            </button>
+            <Link className="ws-btn is-primary" to="/workspace">
+              <Mic size={15} /> Open the voice workspace
+            </Link>
           }
         >
-          Start by describing an offer — “20% off cold coffee this weekend, 4 to 8 PM, for college students”.
+          Say an offer in the voice workspace and it will appear here while it is being made.
         </EmptyState>
       ) : (
         <div>
           {list.map((campaign) => (
-            <button
-              key={campaign.id}
-              type="button"
-              className="ws-campaign-row"
-              onClick={() => onOpen(campaign.id)}
-            >
+            <button key={campaign.id} type="button" className="ws-campaign-row" onClick={() => onOpen(campaign.id)}>
               <span className="ws-campaign-id">#{campaign.id}</span>
               <span className="ws-campaign-main">
-                <b>{campaign.input_type === 'audio' ? 'Spoken brief' : 'Typed brief'}</b>
+                <b>{campaign.input_type === 'audio' ? 'Spoken offer' : 'Typed offer'}</b>
                 <span>
                   {new Date(campaign.created_at).toLocaleString()}
                   {campaign.has_transcript ? '' : ' · no transcript captured'}
@@ -330,69 +270,44 @@ function Stat({ label, value, sub, loading }) {
   );
 }
 
-/** Steps B–H for one campaign. */
-function CampaignDetail({ campaignId, step, setStep, backend, onClose, showToast, showError }) {
+/** One campaign, top to bottom, kept current while it is being made. */
+function CampaignLive({ campaignId, onClose }) {
   const campaign = useResource((signal) => getCampaign(campaignId, signal), [campaignId]);
   const assets = useResource((signal) => listAssets(campaignId, signal), [campaignId]);
-  // The plan is absent until step 3 runs, so a 404 here is an expected state
-  // rather than an error worth showing.
-  const plan = useResource(
-    (signal) =>
-      getPlan(campaignId, signal).catch((error) => {
-        if (error?.status === 404) return null;
-        throw error;
-      }),
-    [campaignId],
-  );
+  // No plan, jobs or posts yet is an ordinary state here, not an error.
+  const plan = useResource((signal) => getPlan(campaignId, signal).catch(() => null), [campaignId]);
+  const jobs = useResource((signal) => listVideoJobs(campaignId, signal).catch(() => []), [campaignId]);
+  const posts = useResource((signal) => listPublishRecords(campaignId, signal).catch(() => []), [campaignId]);
 
-  const factsheet = campaign.data?.factsheet ?? null;
-  const factsLocked = factsheet?.status === 'locked' && factsheet?.seal_valid !== false;
-  const hasPlan = Boolean(plan.data?.plan);
-  const hasAssets = (assets.data ?? []).length > 0;
-  const anyVerified = (assets.data ?? []).some(
-    (asset) => asset.asset_status === 'verified' || asset.asset_status === 'human_verified',
-  );
+  usePolling(() => {
+    campaign.refresh();
+    assets.refresh();
+    plan.refresh();
+    jobs.refresh();
+    posts.refresh();
+  }, DETAIL_POLL_MS);
 
-  const reloadAll = useCallback(() => {
-    campaign.reload();
-    assets.reload();
-    plan.reload();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [campaign.reload, assets.reload, plan.reload]);
+  const data = campaign.data;
+  const factsheet = data?.factsheet ?? null;
+  const facts = factsheet?.facts;
+  const tokens = factsheet?.tokens;
+  const locked = factsheet?.status === 'locked' || factsheet?.status === 'superseded';
+  const all = assets.data ?? [];
+  const byKind = useMemo(() => {
+    const groups = { poster: [], caption: [], voice: [], video: [] };
+    all.forEach((asset) => {
+      (groups[asset.kind] ??= []).push(asset);
+    });
+    return groups;
+  }, [all]);
+  const verified = all.filter((a) => a.asset_status === 'verified' || a.asset_status === 'human_verified').length;
+  const failed = all.filter((a) => a.asset_status === 'failed').length;
+  const open = all.length - verified - failed;
+  const activeJobs = (jobs.data ?? []).filter((job) => job.active);
+  const posted = (posts.data ?? []).filter((record) => record.status === 'PUBLISHED');
+  const master = plan.data?.substituted?.master ?? {};
 
-  const steps = useMemo(
-    () => [
-      { ...STEPS[0], done: Boolean(campaign.data?.transcript), disabled: false },
-      { ...STEPS[1], done: Boolean(factsheet), disabled: !campaign.data },
-      {
-        ...STEPS[2],
-        done: hasPlan,
-        disabled: !factsLocked,
-        disabledReason: 'Lock the facts first.',
-      },
-      {
-        ...STEPS[3],
-        done: hasAssets,
-        disabled: !hasPlan,
-        disabledReason: 'Generate the campaign plan first.',
-      },
-      {
-        ...STEPS[4],
-        done: anyVerified,
-        disabled: !hasAssets,
-        disabledReason: 'Create at least one asset first.',
-      },
-      {
-        ...STEPS[5],
-        done: false,
-        disabled: !hasAssets,
-        disabledReason: 'Create and verify an asset first.',
-      },
-    ],
-    [campaign.data, factsheet, factsLocked, hasPlan, hasAssets, anyVerified],
-  );
-
-  if (campaign.loading && !campaign.data) {
+  if (campaign.loading && !data) {
     return (
       <>
         <BackLink onClose={onClose} />
@@ -403,125 +318,218 @@ function CampaignDetail({ campaignId, step, setStep, backend, onClose, showToast
       </>
     );
   }
-
-  if (campaign.error) {
+  if (campaign.error && !data) {
     return (
       <>
         <BackLink onClose={onClose} />
-        <ErrorBanner
-          error={campaign.error}
-          title="This campaign could not be opened"
-          action={
-            <button type="button" className="ws-btn is-ghost is-small" onClick={campaign.reload}>
-              Retry
-            </button>
-          }
-        />
+        <ErrorBanner error={campaign.error} title="This campaign could not be opened" />
       </>
     );
   }
 
+  const stages = [
+    { label: 'Offer heard', done: Boolean(data?.transcript) },
+    { label: 'Facts read', done: Boolean(facts) },
+    { label: 'Facts locked', done: locked },
+    { label: 'Planned', done: Boolean(plan.data?.plan) },
+    { label: 'Poster', done: byKind.poster.length > 0 },
+    { label: 'Captions', done: byKind.caption.length > 0 },
+    { label: 'Voice-over', done: byKind.voice.length > 0 },
+    { label: 'Video', done: byKind.video.length > 0, doing: activeJobs.length > 0 },
+    { label: 'Checked', done: all.length > 0 && open === 0 && failed === 0 },
+    { label: 'Posted', done: posted.length > 0 },
+  ];
+  // The first unfinished stage is the one in progress.
+  const current = stages.findIndex((stage) => !stage.done);
+  const events = [...(data?.audit_events ?? [])].reverse();
+  const rows = factRows(facts);
+
   return (
-    <>
+    <div className="ws-live">
       <div className="ws-page-head">
         <div>
           <BackLink onClose={onClose} />
-          <span className="ws-kicker">Campaign #{campaignId}</span>
-          <h1>{campaign.data?.factsheet?.facts?.business?.name || 'Untitled campaign'}</h1>
+          <span className="ws-kicker">Campaign #{campaignId} · live</span>
+          <h1>{facts?.business?.name || 'Untitled campaign'}</h1>
           <p>
-            Status <b>{campaign.data?.status?.replace(/_/g, ' ')}</b>
-            {backend.health?.mode === 'mock'
-              ? ' · running on offline demo providers, so generated media is labelled as demo output'
-              : null}
+            Status <b>{data?.status?.replace(/_/g, ' ')}</b> · updates by itself
           </p>
         </div>
-        <button type="button" className="ws-btn is-ghost" onClick={reloadAll}>
-          <RefreshCw size={14} /> Reload
-        </button>
       </div>
 
-      <StepRail steps={steps} current={step} onSelect={setStep} />
+      <ol className="ws-timeline" aria-label="Progress">
+        {stages.map((stage, index) => {
+          const state = stage.done ? 'done' : stage.doing || index === current ? 'doing' : 'todo';
+          return (
+            <li key={stage.label} className={`is-${state}`}>
+              <span className="ws-timeline-mark">
+                {state === 'done' ? <Check size={12} /> : state === 'doing' ? <span className="ws-pulse" /> : null}
+              </span>
+              {stage.label}
+            </li>
+          );
+        })}
+      </ol>
 
-      {step === 'capture' ? (
-        <CampaignTranscript
-          campaign={campaign.data}
-          onReExtract={reloadAll}
-          onTranscriptRecovered={() => {
-            campaign.reload();
-            showToast('Typed brief saved — facts extracted.');
-          }}
-          showError={showError}
-        />
-      ) : null}
+      <div className="ws-live-grid">
+        <div className="ws-live-main">
+          {data?.transcript ? (
+            <div className="ws-card">
+              <div className="ws-card-head">
+                <h3>What was said</h3>
+                <span className="ws-tag">{data.input_type === 'audio' ? 'spoken' : 'typed'}</span>
+              </div>
+              <div className="ws-readout">{data.transcript.raw}</div>
+            </div>
+          ) : null}
 
-      {step === 'facts' ? (
-        <FactReviewStep
-          campaign={campaign.data}
-          factsheet={factsheet}
-          onUpdated={() => {
-            campaign.reload();
-            showToast('Facts updated.');
-          }}
-          onValidated={(sheet) => {
-            campaign.reload();
-            const semantic = sheet?.validation?.semantic;
-            if (semantic?.status === 'unavailable') {
-              showToast('Rule checks ran, but the Agnes review was unavailable.', { error: true });
-            } else {
-              showToast('Validation finished.');
-            }
-          }}
-          onLocked={() => {
-            campaign.reload();
-            showToast('Facts locked and sealed.');
-            setStep('plan');
-          }}
-        />
-      ) : null}
+          {rows.length ? (
+            <div className="ws-card">
+              <div className="ws-card-head">
+                <h3>The offer</h3>
+                <span className={`ws-tag ${locked ? 'is-locked' : 'is-review'}`}>
+                  {locked ? `locked · version ${factsheet.version}` : 'waiting for a spoken “yes”'}
+                </span>
+              </div>
+              <dl className="ws-kv">
+                {rows.map(([label, value]) => (
+                  <React.Fragment key={label}>
+                    <dt>{label}</dt>
+                    <dd>{value}</dd>
+                  </React.Fragment>
+                ))}
+              </dl>
+            </div>
+          ) : null}
 
-      {step === 'plan' ? (
-        <PlanStep
-          campaignId={campaignId}
-          factsLocked={factsLocked}
-          plan={plan.data?.plan}
-          substituted={plan.data?.substituted}
-          onPlanned={() => {
-            plan.reload();
-            showToast('Campaign plan ready.');
-          }}
-        />
-      ) : null}
+          {plan.data?.plan ? (
+            <div className="ws-card">
+              <div className="ws-card-head">
+                <h3>{fillTokens(plan.data.plan.strategy?.angle, tokens) || 'Campaign plan'}</h3>
+                {plan.data.plan.model ? <span className="ws-tag">{plan.data.plan.model}</span> : null}
+              </div>
+              {plan.data.plan.strategy?.rationale ? (
+                <p style={{ marginTop: 0, fontSize: 13.5, color: 'var(--muted)' }}>
+                  {fillTokens(plan.data.plan.strategy.rationale, tokens)}
+                </p>
+              ) : null}
+              <div style={{ display: 'grid', gap: 12 }}>
+                {Object.entries(master).map(([channel, text]) => (
+                  <div key={channel}>
+                    <span className="ws-stat-label">{CHANNEL_LABELS[channel] ?? channel}</span>
+                    <div className="ws-readout" style={{ marginTop: 5 }}>{text}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
 
-      {step === 'assets' ? (
-        <AssetsStep
-          campaignId={campaignId}
-          hasPlan={hasPlan}
-          assets={assets.data}
-          onAssetsChanged={() => {
-            assets.reload();
-            campaign.reload();
-          }}
-          showToast={showToast}
-        />
-      ) : null}
+          {activeJobs.length ? (
+            <div className="ws-card" aria-live="polite">
+              <div className="ws-card-head">
+                <h3>Rendering now</h3>
+              </div>
+              {activeJobs.map((job) => (
+                <p key={job.id} style={{ margin: '0 0 6px', fontSize: 13.5 }}>
+                  <span className="ws-pulse" style={{ marginRight: 8 }} />
+                  {job.kind === 'ai_video' ? 'AI video' : 'Poster reel'}
+                  {job.provider_status ? ` · ${job.provider_status}` : ''}
+                  {typeof job.progress === 'number' ? ` · ${Math.round(job.progress)}%` : ''}
+                </p>
+              ))}
+            </div>
+          ) : null}
 
-      {step === 'verify' ? (
-        <VerifyStep
-          campaignId={campaignId}
-          assets={assets.data}
-          onAssetsChanged={() => {
-            assets.reload();
-            campaign.reload();
-          }}
-          showToast={showToast}
-        />
-      ) : null}
+          <AssetGallery title="Posters" icon={ImageIcon} assets={byKind.poster} kind="poster" />
+          <AssetGallery title="Videos" icon={Film} assets={byKind.video} kind="video" />
+          <AssetGallery title="Voice-over" icon={Volume2} assets={byKind.voice} kind="voice" />
+          <AssetGallery title="Captions" icon={FileImage} assets={byKind.caption} kind="caption" />
+        </div>
 
-      {step === 'publish' ? (
-        <PublishStep campaignId={campaignId} assets={assets.data} showToast={showToast} />
-      ) : null}
-    </>
+        <aside className="ws-live-side">
+          {all.length ? (
+            <div className="ws-card">
+              <div className="ws-card-head">
+                <h3>Checks</h3>
+              </div>
+              <div className="ws-chips">
+                <span className="ws-tag is-pass">{verified} verified</span>
+                {open ? <span className="ws-tag is-review">{open} waiting</span> : null}
+                {failed ? <span className="ws-tag is-fail">{failed} failed</span> : null}
+              </div>
+              <p style={{ margin: '10px 0 0', fontSize: 12.5, color: 'var(--muted)' }}>
+                Every asset is compared with the locked offer. Only verified ones can be posted.
+              </p>
+            </div>
+          ) : null}
+
+          {(posts.data ?? []).length ? (
+            <div className="ws-card">
+              <div className="ws-card-head">
+                <h3>Posts</h3>
+              </div>
+              <ul className="ws-feed">
+                {posts.data.map((record) => (
+                  <li key={record.id}>
+                    <span className={`ws-timeline-mark ${record.status === 'PUBLISHED' ? 'is-ok' : record.status === 'FAILED' ? 'is-bad' : ''}`}>
+                      {record.status === 'PUBLISHED' ? <Check size={11} /> : record.status === 'FAILED' ? <X size={11} /> : null}
+                    </span>
+                    <span>
+                      <b>{CHANNEL_LABELS[record.destination] ?? record.destination}</b>
+                      <small>{record.status.toLowerCase().replace(/_/g, ' ')}</small>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+
+          <div className="ws-card">
+            <div className="ws-card-head">
+              <h3>Activity</h3>
+              <span className="ws-tag">{events.length}</span>
+            </div>
+            {events.length === 0 ? (
+              <p style={{ margin: 0, fontSize: 13, color: 'var(--muted)' }}>Nothing has happened yet.</p>
+            ) : (
+              <ul className="ws-feed">
+                {events.map((event) => (
+                  <li key={event.id}>
+                    <span className="ws-timeline-mark" />
+                    <span>
+                      <b>{EVENT_LABELS[event.event_type] ?? event.event_type.replace(/[._]/g, ' ')}</b>
+                      <small>{clock(event.created_at)}</small>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </aside>
+      </div>
+    </div>
   );
+}
+
+function factRows(facts) {
+  const business = facts?.business ?? {};
+  const offer = facts?.offer ?? {};
+  const rows = [];
+  if (business.name) rows.push(['Business', business.name]);
+  if ((offer.product ?? []).length) rows.push(['Offer', offer.product.join(', ')]);
+  if (offer.discount_percent) rows.push(['Discount', `${offer.discount_percent}% off`]);
+  if (offer.discount_flat) rows.push(['Flat off', String(offer.discount_flat)]);
+  if (offer.price) rows.push(['Price', String(offer.price)]);
+  if ((offer.audience ?? []).length) rows.push(['For', offer.audience.join(', ')]);
+  if ((offer.days ?? []).length) rows.push(['Days', offer.days.join(', ')]);
+  const time = [offer.start_time, offer.end_time].filter(Boolean).join(' – ');
+  if (time) rows.push(['Time', time]);
+  const dates = [offer.date_start, offer.date_end].filter(Boolean).join(' – ');
+  if (dates) rows.push(['Dates', dates]);
+  if (offer.location || business.location) rows.push(['Where', offer.location || business.location]);
+  if ((offer.conditions ?? []).length) rows.push(['Conditions', offer.conditions.join(', ')]);
+  if ((facts?.languages ?? []).length) rows.push(['Languages', facts.languages.join(', ')]);
+  return rows;
 }
 
 function BackLink({ onClose }) {
@@ -529,142 +537,5 @@ function BackLink({ onClose }) {
     <button type="button" className="ws-btn is-ghost is-small" onClick={onClose} style={{ marginBottom: 12 }}>
       <ArrowLeft size={13} /> All campaigns
     </button>
-  );
-}
-
-/** Read-only view of what was captured, plus a re-extract action. */
-function CampaignTranscript({ campaign, onReExtract, onTranscriptRecovered, showError }) {
-  const { run, pending, error } = useAsyncAction();
-
-  const reExtract = async () => {
-    const result = await run(() => extractFacts(campaign.id));
-    if (result.ok) onReExtract();
-    else showError(result.error);
-  };
-
-  if (!campaign?.transcript) {
-    return (
-      <TranscriptRecovery
-        campaign={campaign}
-        onRecovered={onTranscriptRecovered}
-        showError={showError}
-      />
-    );
-  }
-
-  const t = campaign.transcript;
-  return (
-    <div className="ws-card">
-      <div className="ws-card-head">
-        <div>
-          <span className="ws-kicker">Step 1 · Captured</span>
-          <h2>What you said</h2>
-        </div>
-        <div className="ws-chips">
-          <span className="ws-tag">{campaign.input_type}</span>
-          {t.is_mock ? <span className="ws-tag is-mock">Offline transcription</span> : null}
-        </div>
-      </div>
-
-      <div className="ws-readout">{t.raw}</div>
-
-      <dl className="ws-kv" style={{ marginTop: 14 }}>
-        <dt>Provider</dt>
-        <dd>{t.provider || '—'}</dd>
-        <dt>Language</dt>
-        <dd>{t.language || 'not detected'}</dd>
-        {t.duration_seconds ? (
-          <>
-            <dt>Duration</dt>
-            <dd>{t.duration_seconds}s</dd>
-          </>
-        ) : null}
-        <dt>Transcript hash</dt>
-        <dd className="ws-hash">{t.hash || '—'}</dd>
-      </dl>
-
-      <ErrorBanner error={error} title="Re-extraction failed" />
-      <div className="ws-asset-foot">
-        <button type="button" className="ws-btn is-ghost is-small" onClick={reExtract} disabled={pending}>
-          {pending ? <Spinner label="Extracting…" /> : 'Re-run fact extraction'}
-        </button>
-      </div>
-      <small style={{ color: 'var(--muted)' }}>
-        The raw transcript is immutable — re-extraction only re-reads it. It is refused once the facts are
-        locked.
-      </small>
-    </div>
-  );
-}
-
-/**
- * Recovery for a campaign whose transcription failed: the old UI said "enter
- * the facts by hand in the next step" while extraction kept refusing because
- * there was no transcript — an inescapable loop (audit-reports/06). The typed
- * brief attaches to the campaign and extraction runs immediately; the recorded
- * audio is never lost.
- */
-function TranscriptRecovery({ campaign, onRecovered, showError }) {
-  const [text, setText] = useState('');
-  const [submitting, setSubmitting] = useState(false);
-  // `campaign.stt` only exists on the create response; after a refresh the
-  // provider's reason is read back from the audit trail.
-  const sttReason =
-    campaign?.stt?.message ||
-    [...(campaign?.audit_events ?? [])].reverse().find((event) => event.event_type === 'stt.unavailable')
-      ?.payload?.message;
-  const wasAudio = campaign?.input_type === 'audio';
-
-  const submitRecovery = async () => {
-    if (!text.trim()) return;
-    setSubmitting(true);
-    try {
-      const recovered = await setCampaignTranscript(campaign.id, { text: text.trim() });
-      setText('');
-      onRecovered?.(recovered);
-    } catch (caught) {
-      showError(errorMessage(caught));
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  return (
-    <div className="ws-card">
-      <div className="ws-card-head">
-        <div>
-          <span className="ws-kicker">Step 1 · Captured</span>
-          <h2>No transcript was captured</h2>
-        </div>
-      </div>
-
-      <Banner tone="warn" title={wasAudio ? 'Your recording was saved, but it was not transcribed' : undefined}>
-        {sttReason || 'Speech-to-text was unavailable for this campaign.'} Type the offer below
-        {wasAudio ? ' — the recording you made is kept.' : '.'}
-      </Banner>
-
-      <div className="ws-field" style={{ marginTop: 14 }}>
-        <label htmlFor="recovery-text">Offer brief</label>
-        <textarea
-          id="recovery-text"
-          value={text}
-          placeholder={
-            '20% off cold coffee this Saturday and Sunday, 4 PM to 8 PM, for college students.'
-          }
-          onChange={(event) => setText(event.target.value)}
-        />
-      </div>
-
-      <div className="ws-asset-foot">
-        <button
-          type="button"
-          className="ws-btn is-primary"
-          onClick={submitRecovery}
-          disabled={submitting || !text.trim()}
-        >
-          {submitting ? <Spinner label="Extracting…" /> : 'Save and extract the facts'}
-        </button>
-      </div>
-    </div>
   );
 }

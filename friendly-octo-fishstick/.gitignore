@@ -34,5 +34,18 @@ Thumbs.db
 .idea/
 .vscode/
 .claude/
+**/.claude/
 .freebuff/
+**/.freebuff/
 *.log
+
+# ── Internal documentation, specs, and plans ──────────────────────
+*TITAN*
+*API_ENDPOINTS*
+*IMPLEMENTATION_PLAN*
+OPERATIONS.md
+audit-reports/
+docs/
+brag-plan.md
+AGENTS.md
+SKILL.md
